@@ -1,0 +1,5 @@
+dist/
+.bee-build.mk
+bee.lm.json
+*.db
+.bee_secret
