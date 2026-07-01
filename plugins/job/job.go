@@ -17,6 +17,7 @@ import (
 	"github.com/hyhy2001/bee/internal/db"
 	"github.com/hyhy2001/bee/internal/session"
 	"github.com/hyhy2001/bee/plugins/controller"
+	node "github.com/hyhy2001/bee/plugins/node"
 )
 
 type controlledAgentGrant struct {
@@ -894,7 +895,7 @@ func jobListAgentsCmd(database *sql.DB, dbPath string) *cobra.Command {
 func jobApproveAgentCmd(database *sql.DB, dbPath string) *cobra.Command {
 	return &cobra.Command{
 		Use:   "approve-agent <folder> <agent>",
-		Short: "Approve (whitelist) an agent to run builds from a controlled-agent folder",
+		Short: "Approve an agent for a Folders Plus controlled-agent folder (5-step handshake)",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			folder, agent := args[0], args[1]
@@ -902,9 +903,8 @@ func jobApproveAgentCmd(database *sql.DB, dbPath string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			path := "/job/" + JobPathSegments(folder) + "/controlled-agent/grant"
-			params := map[string]string{"agent": agent}
-			if err := client.PostForm(cmd.Context(), path, params); err != nil {
+			cli.Info(fmt.Sprintf("Running Folders Plus handshake: agent '%s' ↔ folder '%s'...", agent, folder))
+			if err := node.ApproveFolder(cmd.Context(), client, agent, folder); err != nil {
 				return err
 			}
 			cli.Success(fmt.Sprintf("Agent '%s' approved for folder '%s'", agent, folder))
@@ -933,9 +933,8 @@ func jobRemoveAgentCmd(database *sql.DB, dbPath string) *cobra.Command {
 				return err
 			}
 			for _, g := range grants {
-				if g.AgentName == agent {
-					path := "/job/" + JobPathSegments(folder) + "/controlled-agent/grant/" + url.PathEscape(g.GrantID) + "/remove"
-					if err := client.PostForm(cmd.Context(), path, nil); err != nil {
+				if strings.EqualFold(g.AgentName, agent) {
+					if err := node.RemoveControlledAgentGrant(cmd.Context(), client, folder, g.GrantID); err != nil {
 						return err
 					}
 					cli.Success(fmt.Sprintf("Removed agent '%s' from folder '%s'", agent, folder))

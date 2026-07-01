@@ -166,6 +166,72 @@ func (c *Client) PostXML(ctx context.Context, path, xmlBody string) error {
 	return nil
 }
 
+// PostFormGetLocation sends a POST with form body and returns the Location header
+// from the response (without following the redirect). Used for Jenkins endpoints
+// that 302-redirect to the newly created resource URL.
+func (c *Client) PostFormGetLocation(ctx context.Context, path string, params map[string]string) (string, error) {
+	var sb strings.Builder
+	first := true
+	for k, v := range params {
+		if !first {
+			sb.WriteByte('&')
+		}
+		sb.WriteString(k + "=" + v)
+		first = false
+	}
+
+	// Use a client that does NOT follow redirects so we can read Location header.
+	noRedirect := &http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+		Timeout: 30 * time.Second,
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+path, strings.NewReader(sb.String()))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Basic "+c.BasicToken)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	c.mu.Lock()
+	if !c.crumbValid() {
+		if e := c.fetchCrumb(ctx); e != nil {
+			c.mu.Unlock()
+			return "", fmt.Errorf("crumb: %w", e)
+		}
+	}
+	if c.crumb != "" {
+		req.Header.Set(c.crumbField, c.crumb)
+	}
+	c.mu.Unlock()
+
+	resp, err := noRedirect.Do(req)
+	if err != nil {
+		return "", err
+	}
+	resp.Body.Close()
+	loc := resp.Header.Get("Location")
+	if loc == "" && resp.StatusCode >= 400 {
+		return "", fmt.Errorf("POST %s: HTTP %d", path, resp.StatusCode)
+	}
+	return loc, nil
+}
+
+// GetHTML fetches a page as raw HTML string.
+func (c *Client) GetHTML(ctx context.Context, path string) (string, error) {
+	resp, err := c.Do(ctx, http.MethodGet, path, nil, "")
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("GET %s: HTTP %d", path, resp.StatusCode)
+	}
+	b, err := io.ReadAll(resp.Body)
+	return string(b), err
+}
+
 // PostForm sends a POST with form-encoded body.
 func (c *Client) PostForm(ctx context.Context, path string, params map[string]string) error {
 	var sb strings.Builder
