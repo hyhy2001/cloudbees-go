@@ -51,15 +51,91 @@ func xmlEscape(s string) string {
 	return s
 }
 
-// buildFreestyleXML builds a minimal Freestyle config.xml.
-func buildFreestyleXML(desc, shellCmd, node, schedule string) string {
+// buildEmailPublisherXML builds the email-ext publisher block.
+func buildEmailPublisherXML(email, emailCond string, keywords []string, emailRegex string) string {
+	if email == "" {
+		return ""
+	}
+	var triggers []string
+	switch emailCond {
+	case "failed", "always", "custom", "":
+		triggers = append(triggers, `      <hudson.plugins.emailext.plugins.trigger.FailureTrigger><email><defaultSubject>$DEFAULT_SUBJECT</defaultSubject><defaultContent>$DEFAULT_CONTENT</defaultContent><attachmentsPattern></attachmentsPattern><attachBuildLog>false</attachBuildLog><compressBuildLog>false</compressBuildLog><replyTo>$DEFAULT_REPLYTO</replyTo><contentType>default</contentType></email></hudson.plugins.emailext.plugins.trigger.FailureTrigger>`)
+	}
+	if emailCond == "success" || emailCond == "always" || emailCond == "custom" {
+		triggers = append(triggers, `      <hudson.plugins.emailext.plugins.trigger.SuccessTrigger><email><defaultSubject>$DEFAULT_SUBJECT</defaultSubject><defaultContent>$DEFAULT_CONTENT</defaultContent><attachmentsPattern></attachmentsPattern><attachBuildLog>false</attachBuildLog><compressBuildLog>false</compressBuildLog><replyTo>$DEFAULT_REPLYTO</replyTo><contentType>default</contentType></email></hudson.plugins.emailext.plugins.trigger.SuccessTrigger>`)
+	}
+	presend := "$DEFAULT_PRESEND_SCRIPT"
+	if len(keywords) > 0 || emailRegex != "" {
+		presend = buildEmailPresendScript(keywords, emailRegex)
+	}
+	return `    <hudson.plugins.emailext.ExtendedEmailPublisher plugin="email-ext">` +
+		`<recipientList>` + xmlEscape(email) + `</recipientList>` +
+		`<configuredTriggers>` + strings.Join(triggers, "") + `</configuredTriggers>` +
+		`<contentType>default</contentType>` +
+		`<defaultSubject>$DEFAULT_SUBJECT</defaultSubject>` +
+		`<defaultContent>$DEFAULT_CONTENT</defaultContent>` +
+		`<attachmentsPattern></attachmentsPattern>` +
+		`<presendScript>` + xmlEscape(presend) + `</presendScript>` +
+		`<postsendScript>$DEFAULT_POSTSEND_SCRIPT</postsendScript>` +
+		`<attachBuildLog>false</attachBuildLog>` +
+		`<compressBuildLog>false</compressBuildLog>` +
+		`<replyTo>$DEFAULT_REPLYTO</replyTo>` +
+		`<from></from>` +
+		`<saveOutput>false</saveOutput>` +
+		`<disabled>false</disabled>` +
+		`</hudson.plugins.emailext.ExtendedEmailPublisher>`
+}
+
+// buildEmailPresendScript generates the Groovy presend script for keyword/regex filtering.
+func buildEmailPresendScript(keywords []string, emailRegex string) string {
+	kwLiterals := make([]string, len(keywords))
+	for i, k := range keywords {
+		kwLiterals[i] = `"` + strings.ReplaceAll(k, `"`, `\"`) + `"`
+	}
+	regexLit := "null"
+	if emailRegex != "" {
+		regexLit = `"` + strings.ReplaceAll(emailRegex, `"`, `\"`) + `"`
+	}
+	return strings.Join([]string{
+		`def _bee_raw = ''`,
+		`try { if (binding?.hasVariable('build') && build != null) { _bee_raw = build.getLog(Integer.MAX_VALUE).join('\n') ?: '' } } catch (Throwable _bee_ignore) {}`,
+		`def _bee_keywords = [` + strings.Join(kwLiterals, ", ") + `]`,
+		`def _bee_regex = ` + regexLit,
+		`def _bee_kw_match = _bee_keywords.any { _bee_raw.toLowerCase().contains(it.toLowerCase()) }`,
+		`def _bee_regex_match = _bee_regex != null && (_bee_raw ==~ ('(?is).*(' + _bee_regex + ').*'))`,
+		`def _bee_has_kw = !_bee_keywords.isEmpty()`,
+		`def _bee_has_rx = (_bee_regex != null)`,
+		`if ((_bee_has_kw && !_bee_kw_match) || (_bee_has_rx && !_bee_regex_match)) { cancel = true }`,
+	}, "\n")
+}
+
+// buildParametersPropertyXML builds the <properties> block for build parameters.
+// paramDefs is a slice of "NAME" or "NAME=default" strings.
+func buildParametersPropertyXML(paramDefs []string) string {
+	if len(paramDefs) == 0 {
+		return `  <properties/>`
+	}
+	var params []string
+	for _, pd := range paramDefs {
+		name, def, _ := strings.Cut(pd, "=")
+		params = append(params, `      <hudson.model.StringParameterDefinition>`+
+			`<name>`+xmlEscape(strings.TrimSpace(name))+`</name>`+
+			`<defaultValue>`+xmlEscape(def)+`</defaultValue>`+
+			`<trim>false</trim>`+
+			`</hudson.model.StringParameterDefinition>`)
+	}
+	return `  <properties><hudson.model.ParametersDefinitionProperty>` +
+		`<parameterDefinitions>` + strings.Join(params, "") + `</parameterDefinitions>` +
+		`</hudson.model.ParametersDefinitionProperty></properties>`
+}
+
+// buildFreestyleXML builds a Freestyle config.xml with optional email and params.
+func buildFreestyleXML(desc, shellCmd, node, schedule, email, emailCond string, emailKeywords []string, emailRegex string, paramDefs []string) string {
 	var sb strings.Builder
-	sb.WriteString(`<?xml version='1.1' encoding='UTF-8'?>`)
-	sb.WriteString(`<project>`)
+	sb.WriteString(`<?xml version='1.1' encoding='UTF-8'?><project>`)
 	sb.WriteString(`<description>` + xmlEscape(desc) + `</description>`)
 	if node != "" {
-		sb.WriteString(`<assignedNode>` + xmlEscape(node) + `</assignedNode>`)
-		sb.WriteString(`<canRoam>false</canRoam>`)
+		sb.WriteString(`<assignedNode>` + xmlEscape(node) + `</assignedNode><canRoam>false</canRoam>`)
 	} else {
 		sb.WriteString(`<canRoam>true</canRoam>`)
 	}
@@ -72,10 +148,39 @@ func buildFreestyleXML(desc, shellCmd, node, schedule string) string {
 		sb.WriteString(`<triggers/>`)
 	}
 	sb.WriteString(`<concurrentBuild>false</concurrentBuild>`)
+	sb.WriteString(buildParametersPropertyXML(paramDefs))
 	sb.WriteString(`<builders><hudson.tasks.Shell><command>` + xmlEscape(shellCmd) + `</command></hudson.tasks.Shell></builders>`)
-	sb.WriteString(`<publishers/>`)
-	sb.WriteString(`<buildWrappers/>`)
-	sb.WriteString(`</project>`)
+	emailXML := buildEmailPublisherXML(email, emailCond, emailKeywords, emailRegex)
+	if emailXML != "" {
+		sb.WriteString(`<publishers>` + emailXML + `</publishers>`)
+	} else {
+		sb.WriteString(`<publishers/>`)
+	}
+	sb.WriteString(`<buildWrappers/></project>`)
+	return sb.String()
+}
+
+// buildPipelineXML builds a Pipeline config.xml with optional email and params.
+func buildPipelineXML(desc, script, schedule, email, emailCond string, emailKeywords []string, emailRegex string, paramDefs []string) string {
+	var sb strings.Builder
+	sb.WriteString(`<?xml version='1.1' encoding='UTF-8'?><flow-definition plugin="workflow-job">`)
+	sb.WriteString(`<description>` + xmlEscape(desc) + `</description>`)
+	sb.WriteString(`<keepDependencies>false</keepDependencies>`)
+	sb.WriteString(buildParametersPropertyXML(paramDefs))
+	if schedule != "" {
+		sb.WriteString(`<triggers><hudson.triggers.TimerTrigger><spec>` + xmlEscape(schedule) + `</spec></hudson.triggers.TimerTrigger></triggers>`)
+	} else {
+		sb.WriteString(`<triggers/>`)
+	}
+	sb.WriteString(`<definition class="org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition" plugin="workflow-cps">`)
+	sb.WriteString(`<script>` + xmlEscape(script) + `</script><sandbox>true</sandbox></definition>`)
+	emailXML := buildEmailPublisherXML(email, emailCond, emailKeywords, emailRegex)
+	if emailXML != "" {
+		sb.WriteString(`<publishers>` + emailXML + `</publishers>`)
+	} else {
+		sb.WriteString(`<publishers/>`)
+	}
+	sb.WriteString(`<disabled>false</disabled></flow-definition>`)
 	return sb.String()
 }
 
@@ -88,28 +193,6 @@ func buildFolderXML(desc string) string {
 		`<viewsTabBar class="hudson.views.DefaultViewsTabBar"/>` +
 		`<healthMetrics/>` +
 		`</com.cloudbees.hudson.plugins.folder.Folder>`
-}
-
-// buildPipelineXML builds a minimal Pipeline (WorkflowJob) config.xml.
-func buildPipelineXML(desc, script, schedule string) string {
-	var sb strings.Builder
-	sb.WriteString(`<?xml version='1.1' encoding='UTF-8'?>`)
-	sb.WriteString(`<flow-definition plugin="workflow-job">`)
-	sb.WriteString(`<description>` + xmlEscape(desc) + `</description>`)
-	sb.WriteString(`<keepDependencies>false</keepDependencies>`)
-	sb.WriteString(`<properties/>`)
-	if schedule != "" {
-		sb.WriteString(`<triggers><hudson.triggers.TimerTrigger><spec>` + xmlEscape(schedule) + `</spec></hudson.triggers.TimerTrigger></triggers>`)
-	} else {
-		sb.WriteString(`<triggers/>`)
-	}
-	sb.WriteString(`<definition class="org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition" plugin="workflow-cps">`)
-	sb.WriteString(`<script>` + xmlEscape(script) + `</script>`)
-	sb.WriteString(`<sandbox>true</sandbox>`)
-	sb.WriteString(`</definition>`)
-	sb.WriteString(`<disabled>false</disabled>`)
-	sb.WriteString(`</flow-definition>`)
-	return sb.String()
 }
 
 // listControlledAgents parses the HTML at /job/{folder}/controlled-slaves/.
@@ -282,9 +365,20 @@ func jobGetCmd(database *sql.DB, dbPath string) *cobra.Command {
 func jobCreateCmd(database *sql.DB, dbPath string) *cobra.Command {
 	create := &cobra.Command{Use: "create", Short: "Create a new job"}
 
+	// shared email/param vars — each subcommand binds its own set
+	addEmailFlags := func(cmd *cobra.Command, email, emailCond *string, emailKeywords *[]string, emailRegex *string) {
+		cmd.Flags().StringVar(email, "email", "", "Email addresses to notify (comma-separated)")
+		cmd.Flags().StringVar(emailCond, "email-cond", "failed", "When to send email: failed|success|always|custom")
+		cmd.Flags().StringArrayVar(emailKeywords, "email-keyword", nil, "Send email only if build log contains keyword (repeatable)")
+		cmd.Flags().StringVar(emailRegex, "email-regex", "", "Send email only if build log matches regex")
+	}
+	addParamFlag := func(cmd *cobra.Command, paramDefs *[]string) {
+		cmd.Flags().StringArrayVar(paramDefs, "param-def", nil, "Add build parameter NAME or NAME=default (repeatable)")
+	}
+
 	// freestyle subcommand
-	var desc, shell, node, schedule, folder string
-	var paramDefs []string
+	var fsDesc, fsShell, fsChdir, fsNode, fsSchedule, fsFolder, fsEmail, fsEmailCond, fsEmailRegex string
+	var fsEmailKeywords, fsParamDefs []string
 	freestyle := &cobra.Command{
 		Use:   "freestyle <name>",
 		Short: "Create a new Freestyle job",
@@ -295,10 +389,14 @@ func jobCreateCmd(database *sql.DB, dbPath string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			xmlBody := buildFreestyleXML(desc, shell, node, schedule)
+			shell := fsShell
+			if fsChdir != "" && shell != "" {
+				shell = "cd " + fsChdir + " && " + shell
+			}
+			xmlBody := buildFreestyleXML(fsDesc, shell, fsNode, fsSchedule, fsEmail, fsEmailCond, fsEmailKeywords, fsEmailRegex, fsParamDefs)
 			path := "/createItem?name=" + url.QueryEscape(name)
-			if folder != "" {
-				path = "/job/" + JobPathSegments(folder) + path
+			if fsFolder != "" {
+				path = "/job/" + JobPathSegments(fsFolder) + path
 			}
 			if err := client.PostXML(cmd.Context(), path, xmlBody); err != nil {
 				return err
@@ -309,15 +407,18 @@ func jobCreateCmd(database *sql.DB, dbPath string) *cobra.Command {
 			return nil
 		},
 	}
-	freestyle.Flags().StringVar(&desc, "description", "", "Job description")
-	freestyle.Flags().StringVar(&shell, "shell", "", "Shell command to run")
-	freestyle.Flags().StringVar(&node, "node", "", "Restrict to node/label")
-	freestyle.Flags().StringVar(&schedule, "schedule", "", "Cron schedule")
-	freestyle.Flags().StringVar(&folder, "folder", "", "Parent folder path")
-	freestyle.Flags().StringArrayVar(&paramDefs, "param-def", nil, "Build parameter NAME=default")
+	freestyle.Flags().StringVar(&fsDesc, "description", "", "Job description")
+	freestyle.Flags().StringVar(&fsShell, "shell", "", "Shell command to run")
+	freestyle.Flags().StringVar(&fsChdir, "chdir", "", "Working directory (prepended to --shell)")
+	freestyle.Flags().StringVar(&fsNode, "node", "", "Restrict to node/label")
+	freestyle.Flags().StringVar(&fsSchedule, "schedule", "", "Cron schedule")
+	freestyle.Flags().StringVar(&fsFolder, "folder", "", "Parent folder path")
+	addEmailFlags(freestyle, &fsEmail, &fsEmailCond, &fsEmailKeywords, &fsEmailRegex)
+	addParamFlag(freestyle, &fsParamDefs)
 
 	// pipeline subcommand
-	var pScript string
+	var plDesc, plScript, plNode, plSchedule, plFolder, plEmail, plEmailCond, plEmailRegex string
+	var plEmailKeywords, plParamDefs []string
 	pipeline := &cobra.Command{
 		Use:   "pipeline <name>",
 		Short: "Create a new Pipeline job",
@@ -328,10 +429,10 @@ func jobCreateCmd(database *sql.DB, dbPath string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			xmlBody := buildPipelineXML(desc, pScript, schedule)
+			xmlBody := buildPipelineXML(plDesc, plScript, plSchedule, plEmail, plEmailCond, plEmailKeywords, plEmailRegex, plParamDefs)
 			path := "/createItem?name=" + url.QueryEscape(name)
-			if folder != "" {
-				path = "/job/" + JobPathSegments(folder) + path
+			if plFolder != "" {
+				path = "/job/" + JobPathSegments(plFolder) + path
 			}
 			if err := client.PostXML(cmd.Context(), path, xmlBody); err != nil {
 				return err
@@ -342,13 +443,17 @@ func jobCreateCmd(database *sql.DB, dbPath string) *cobra.Command {
 			return nil
 		},
 	}
-	pipeline.Flags().StringVar(&desc, "description", "", "Job description")
-	pipeline.Flags().StringVar(&pScript, "script", "", "Pipeline script (Groovy inline or path)")
-	pipeline.Flags().StringVar(&node, "node", "", "Restrict to node/label")
-	pipeline.Flags().StringVar(&schedule, "schedule", "", "Cron schedule")
-	pipeline.Flags().StringVar(&folder, "folder", "", "Parent folder path")
+	pipeline.Flags().StringVar(&plDesc, "description", "", "Job description")
+	pipeline.Flags().StringVar(&plScript, "script", "", "Pipeline script (Groovy inline or path)")
+	pipeline.Flags().StringVar(&plNode, "node", "", "Restrict to node/label")
+	_ = plNode // ponytail: pipeline node injection via script parse
+	pipeline.Flags().StringVar(&plSchedule, "schedule", "", "Cron schedule")
+	pipeline.Flags().StringVar(&plFolder, "folder", "", "Parent folder path")
+	addEmailFlags(pipeline, &plEmail, &plEmailCond, &plEmailKeywords, &plEmailRegex)
+	addParamFlag(pipeline, &plParamDefs)
 
 	// folder subcommand
+	var fdDesc, fdFolder string
 	folderCmd := &cobra.Command{
 		Use:   "folder <name>",
 		Short: "Create a new Folder",
@@ -359,10 +464,10 @@ func jobCreateCmd(database *sql.DB, dbPath string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			xmlBody := buildFolderXML(desc)
+			xmlBody := buildFolderXML(fdDesc)
 			path := "/createItem?name=" + url.QueryEscape(name)
-			if folder != "" {
-				path = "/job/" + JobPathSegments(folder) + path
+			if fdFolder != "" {
+				path = "/job/" + JobPathSegments(fdFolder) + path
 			}
 			if err := client.PostXML(cmd.Context(), path, xmlBody); err != nil {
 				return err
@@ -371,8 +476,8 @@ func jobCreateCmd(database *sql.DB, dbPath string) *cobra.Command {
 			return nil
 		},
 	}
-	folderCmd.Flags().StringVar(&desc, "description", "", "Folder description")
-	folderCmd.Flags().StringVar(&folder, "folder", "", "Parent folder path")
+	folderCmd.Flags().StringVar(&fdDesc, "description", "", "Folder description")
+	folderCmd.Flags().StringVar(&fdFolder, "folder", "", "Parent folder path")
 
 	create.AddCommand(freestyle, pipeline, folderCmd)
 	return create
@@ -671,7 +776,18 @@ func jobStatusCmd(database *sql.DB, dbPath string) *cobra.Command {
 func jobUpdateCmd(database *sql.DB, dbPath string) *cobra.Command {
 	update := &cobra.Command{Use: "update", Short: "Update an existing job's configuration"}
 
-	var desc, shell, node, schedule string
+	addEmailFlags := func(cmd *cobra.Command, email, emailCond *string, emailKeywords *[]string, emailRegex *string, clearKw, clearRe *bool) {
+		cmd.Flags().StringVar(email, "email", "", "Add or change email recipients, or '' to remove")
+		cmd.Flags().StringVar(emailCond, "email-cond", "", "When to send: failed|success|always|custom")
+		cmd.Flags().StringArrayVar(emailKeywords, "email-keyword", nil, "Replace email keyword filters (repeatable)")
+		cmd.Flags().StringVar(emailRegex, "email-regex", "", "Replace email regex filter")
+		cmd.Flags().BoolVar(clearKw, "clear-email-keywords", false, "Remove all email keyword filters")
+		cmd.Flags().BoolVar(clearRe, "clear-email-regex", false, "Remove email regex filter")
+	}
+
+	var fsDesc, fsShell, fsChdir, fsNode, fsSchedule, fsEmail, fsEmailCond, fsEmailRegex string
+	var fsEmailKeywords, fsParamDefs []string
+	var fsClearKw, fsClearRe, fsClearParams bool
 	freestyle := &cobra.Command{
 		Use:   "freestyle <name>",
 		Short: "Update a Freestyle job",
@@ -682,16 +798,38 @@ func jobUpdateCmd(database *sql.DB, dbPath string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			xmlBody := buildFreestyleXML(desc, shell, node, schedule)
+			shell := fsShell
+			if fsChdir != "" && shell != "" {
+				shell = "cd " + fsChdir + " && " + shell
+			}
+			emailKws := fsEmailKeywords
+			if fsClearKw {
+				emailKws = []string{}
+			}
+			emailRe := fsEmailRegex
+			if fsClearRe {
+				emailRe = ""
+			}
+			paramDefs := fsParamDefs
+			if fsClearParams {
+				paramDefs = []string{}
+			}
+			xmlBody := buildFreestyleXML(fsDesc, shell, fsNode, fsSchedule, fsEmail, fsEmailCond, emailKws, emailRe, paramDefs)
 			return client.PostXML(cmd.Context(), "/job/"+JobPathSegments(name)+"/config.xml", xmlBody)
 		},
 	}
-	freestyle.Flags().StringVar(&desc, "description", "", "Job description")
-	freestyle.Flags().StringVar(&shell, "shell", "", "Shell command")
-	freestyle.Flags().StringVar(&node, "node", "", "Node/label")
-	freestyle.Flags().StringVar(&schedule, "schedule", "", "Cron schedule")
+	freestyle.Flags().StringVar(&fsDesc, "description", "", "Job description")
+	freestyle.Flags().StringVar(&fsShell, "shell", "", "Shell command")
+	freestyle.Flags().StringVar(&fsChdir, "chdir", "", "Working directory (prepended to --shell)")
+	freestyle.Flags().StringVar(&fsNode, "node", "", "Node/label")
+	freestyle.Flags().StringVar(&fsSchedule, "schedule", "", "Cron schedule")
+	addEmailFlags(freestyle, &fsEmail, &fsEmailCond, &fsEmailKeywords, &fsEmailRegex, &fsClearKw, &fsClearRe)
+	freestyle.Flags().StringArrayVar(&fsParamDefs, "param-def", nil, "Add/replace build parameter NAME or NAME=default (repeatable)")
+	freestyle.Flags().BoolVar(&fsClearParams, "clear-params", false, "Remove all build parameters")
 
-	var pScript string
+	var plDesc, plScript, plSchedule, plEmail, plEmailCond, plEmailRegex string
+	var plEmailKeywords, plParamDefs []string
+	var plClearKw, plClearRe, plClearParams bool
 	pipeline := &cobra.Command{
 		Use:   "pipeline <name>",
 		Short: "Update a Pipeline job",
@@ -702,13 +840,28 @@ func jobUpdateCmd(database *sql.DB, dbPath string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			xmlBody := buildPipelineXML(desc, pScript, schedule)
+			emailKws := plEmailKeywords
+			if plClearKw {
+				emailKws = []string{}
+			}
+			emailRe := plEmailRegex
+			if plClearRe {
+				emailRe = ""
+			}
+			paramDefs := plParamDefs
+			if plClearParams {
+				paramDefs = []string{}
+			}
+			xmlBody := buildPipelineXML(plDesc, plScript, plSchedule, plEmail, plEmailCond, emailKws, emailRe, paramDefs)
 			return client.PostXML(cmd.Context(), "/job/"+JobPathSegments(name)+"/config.xml", xmlBody)
 		},
 	}
-	pipeline.Flags().StringVar(&desc, "description", "", "Job description")
-	pipeline.Flags().StringVar(&pScript, "script", "", "Pipeline script")
-	pipeline.Flags().StringVar(&schedule, "schedule", "", "Cron schedule")
+	pipeline.Flags().StringVar(&plDesc, "description", "", "Job description")
+	pipeline.Flags().StringVar(&plScript, "script", "", "Pipeline script")
+	pipeline.Flags().StringVar(&plSchedule, "schedule", "", "Cron schedule")
+	addEmailFlags(pipeline, &plEmail, &plEmailCond, &plEmailKeywords, &plEmailRegex, &plClearKw, &plClearRe)
+	pipeline.Flags().StringArrayVar(&plParamDefs, "param-def", nil, "Add/replace build parameter NAME or NAME=default (repeatable)")
+	pipeline.Flags().BoolVar(&plClearParams, "clear-params", false, "Remove all build parameters")
 
 	update.AddCommand(freestyle, pipeline)
 	return update
