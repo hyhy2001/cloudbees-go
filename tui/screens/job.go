@@ -5,12 +5,12 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"net/url"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 
+	jobo "github.com/hyhy2001/bee/plugins/job"
 	"github.com/hyhy2001/bee/plugins/controller"
 	"github.com/hyhy2001/bee/tui/components"
 	"github.com/hyhy2001/bee/tui/theme"
@@ -78,23 +78,12 @@ func (s JobScreen) fetchJobs() tea.Cmd {
 		if err != nil {
 			return jobsLoaded{err: err}
 		}
-		tree := "jobs[_class,name,url,color,description,buildable,lastBuild[number,result]]"
-		var result struct {
-			Jobs []struct {
-				Class       string `json:"_class"`
-				Name        string `json:"name"`
-				Color       string `json:"color"`
-				Description string `json:"description"`
-				LastBuild   *struct {
-					Number int `json:"number"`
-				} `json:"lastBuild"`
-			} `json:"jobs"`
-		}
-		if err := client.GetJSON(context.Background(), "/api/json?tree="+url.QueryEscape(tree), &result); err != nil {
+		jobs, err := jobo.ListJobs(context.Background(), client)
+		if err != nil {
 			return jobsLoaded{err: err}
 		}
-		jobs := make([]jobEntry, 0, len(result.Jobs))
-		for _, j := range result.Jobs {
+		entries := make([]jobEntry, 0, len(jobs))
+		for _, j := range jobs {
 			e := jobEntry{
 				Name:        j.Name,
 				Class:       j.Class,
@@ -104,9 +93,9 @@ func (s JobScreen) fetchJobs() tea.Cmd {
 			if j.LastBuild != nil {
 				e.LastBuild = j.LastBuild.Number
 			}
-			jobs = append(jobs, e)
+			entries = append(entries, e)
 		}
-		return jobsLoaded{jobs: jobs}
+		return jobsLoaded{jobs: entries}
 	}
 }
 
@@ -117,43 +106,15 @@ func (s JobScreen) doDelete(name string) tea.Cmd {
 		if err != nil {
 			return jobDeleted{err: err}
 		}
-		seg := jobPathSegments(name)
-		if err := client.PostForm(context.Background(), "/job/"+seg+"/doDelete", nil); err != nil {
+		if err := jobo.DeleteJob(context.Background(), client, name); err != nil {
 			return jobDeleted{err: err}
 		}
 		return jobDeleted{}
 	}
 }
 
-func jobPathSegments(name string) string {
-	parts := strings.Split(name, "/")
-	for i, p := range parts {
-		parts[i] = url.PathEscape(p)
-	}
-	return strings.Join(parts, "/job/")
-}
-
 func typeLabel(class string) string {
-	switch {
-	case strings.Contains(class, "FreeStyle") || strings.Contains(class, "Freestyle"):
-		return "FS"
-	case strings.Contains(class, "Pipeline") || strings.Contains(class, "WorkflowJob"):
-		return "PL"
-	case strings.Contains(class, "Folder") || strings.Contains(class, "WorkflowMultiBranchProject"):
-		return "FD"
-	case strings.Contains(class, "MultibranchPipeline"):
-		return "MB"
-	default:
-		parts := strings.Split(class, ".")
-		last := parts[len(parts)-1]
-		if len(last) > 4 {
-			return last[:4]
-		}
-		if last != "" {
-			return last
-		}
-		return "--"
-	}
+	return jobo.JobType(class)
 }
 
 func buildJobRows(jobs []jobEntry) []table.Row {

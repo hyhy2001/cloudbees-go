@@ -4,12 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"net/url"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 
+	nodepkg "github.com/hyhy2001/bee/plugins/node"
 	"github.com/hyhy2001/bee/plugins/controller"
 	"github.com/hyhy2001/bee/tui/components"
 	"github.com/hyhy2001/bee/tui/theme"
@@ -77,35 +77,18 @@ func (s NodeScreen) fetchNodes() tea.Cmd {
 		if err != nil {
 			return nodesLoaded{err: err}
 		}
-		treeQuery := "computer[displayName,description,offline,numExecutors,assignedLabels[name]]"
-		var result struct {
-			Computer []struct {
-				DisplayName    string `json:"displayName"`
-				Description    string `json:"description"`
-				Offline        bool   `json:"offline"`
-				NumExecutors   int    `json:"numExecutors"`
-				AssignedLabels []struct {
-					Name string `json:"name"`
-				} `json:"assignedLabels"`
-			} `json:"computer"`
-		}
-		if err := client.GetJSON(context.Background(), "/computer/api/json?tree="+url.QueryEscape(treeQuery), &result); err != nil {
+		rawNodes, err := nodepkg.ListNodes(context.Background(), client)
+		if err != nil {
 			return nodesLoaded{err: err}
 		}
-		nodes := make([]nodeEntry, 0, len(result.Computer))
-		for _, n := range result.Computer {
-			labelParts := make([]string, 0)
-			for _, l := range n.AssignedLabels {
-				if l.Name != "" && l.Name != n.DisplayName {
-					labelParts = append(labelParts, l.Name)
-				}
-			}
+		nodes := make([]nodeEntry, 0, len(rawNodes))
+		for _, n := range rawNodes {
 			nodes = append(nodes, nodeEntry{
 				Name:        n.DisplayName,
 				DisplayName: n.DisplayName,
 				Offline:     n.Offline,
 				Executors:   n.NumExecutors,
-				Labels:      strings.Join(labelParts, " "),
+				Labels:      n.Labels,
 				Description: n.Description,
 			})
 		}
@@ -120,7 +103,7 @@ func (s NodeScreen) doDeleteNode(name string) tea.Cmd {
 		if err != nil {
 			return nodeActionDone{err: err}
 		}
-		if err := client.PostForm(context.Background(), "/computer/"+url.PathEscape(name)+"/doDelete", map[string]string{}); err != nil {
+		if err := nodepkg.DeleteNode(context.Background(), client, name); err != nil {
 			return nodeActionDone{err: err}
 		}
 		return nodeActionDone{}
@@ -134,8 +117,7 @@ func (s NodeScreen) doToggleOffline(name string) tea.Cmd {
 		if err != nil {
 			return nodeActionDone{err: err}
 		}
-		path := "/computer/" + url.PathEscape(name) + "/toggleOffline"
-		if err := client.PostForm(context.Background(), path, map[string]string{}); err != nil {
+		if err := nodepkg.ToggleOffline(context.Background(), client, name, ""); err != nil {
 			return nodeActionDone{err: err}
 		}
 		return nodeActionDone{}

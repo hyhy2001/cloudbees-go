@@ -4,12 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"net/url"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 
+	credpkg "github.com/hyhy2001/bee/plugins/cred"
 	"github.com/hyhy2001/bee/plugins/controller"
 	"github.com/hyhy2001/bee/tui/components"
 	"github.com/hyhy2001/bee/tui/theme"
@@ -73,21 +73,12 @@ func (s CredScreen) fetchCreds() tea.Cmd {
 		if err != nil {
 			return credsLoaded{err: err}
 		}
-		treeQuery := "credentials[id,typeName,scope,description]"
-		var result struct {
-			Credentials []struct {
-				ID          string `json:"id"`
-				TypeName    string `json:"typeName"`
-				Scope       string `json:"scope"`
-				Description string `json:"description"`
-			} `json:"credentials"`
-		}
-		path := "/credentials/store/system/domain/_/api/json?tree=" + url.QueryEscape(treeQuery)
-		if err := client.GetJSON(context.Background(), path, &result); err != nil {
+		rawCreds, err := credpkg.ListCredentials(context.Background(), client, "system", "")
+		if err != nil {
 			return credsLoaded{err: err}
 		}
-		creds := make([]credEntry, 0, len(result.Credentials))
-		for _, c := range result.Credentials {
+		creds := make([]credEntry, 0, len(rawCreds))
+		for _, c := range rawCreds {
 			creds = append(creds, credEntry{
 				ID:          c.ID,
 				TypeName:    c.TypeName,
@@ -106,8 +97,7 @@ func (s CredScreen) doDeleteCred(id string) tea.Cmd {
 		if err != nil {
 			return credActionDone{err: err}
 		}
-		path := "/credentials/store/system/domain/_/credential/" + url.PathEscape(id) + "/doDelete"
-		if err := client.PostForm(context.Background(), path, map[string]string{}); err != nil {
+		if err := credpkg.DeleteCredential(context.Background(), client, id, "", "system"); err != nil {
 			return credActionDone{err: err}
 		}
 		return credActionDone{}

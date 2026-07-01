@@ -9,9 +9,9 @@ import (
 	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/hyhy2001/bee/internal/db"
-	"github.com/hyhy2001/bee/internal/api"
 	"github.com/hyhy2001/bee/internal/session"
+	"github.com/hyhy2001/bee/internal/api"
+	"github.com/hyhy2001/bee/plugins/controller"
 	"github.com/hyhy2001/bee/tui/components"
 	"github.com/hyhy2001/bee/tui/theme"
 )
@@ -79,60 +79,29 @@ func (s ControllerScreen) fetchControllers() tea.Cmd {
 			return controllersLoaded{err: err}
 		}
 		client := api.New(sess.Profile.ServerURL, sess.BasicToken)
-
-		var result struct {
-			Jobs []struct {
-				Class       string `json:"_class"`
-				Name        string `json:"name"`
-				URL         string `json:"url"`
-				Description string `json:"description"`
-				Offline     bool   `json:"offline"`
-			} `json:"jobs"`
-		}
-		if err := client.GetJSON(context.Background(),
-			"/api/json?tree=jobs[_class,name,url,description,offline]", &result); err != nil {
+		dtos, err := controller.ListControllers(context.Background(), client)
+		if err != nil {
 			return controllersLoaded{err: err}
 		}
-
-		var ctrls []ctrlEntry
-		classFrags := []string{"Master", "Controller", "ConnectedMaster", "ManagedMaster"}
-		for _, j := range result.Jobs {
-			for _, frag := range classFrags {
-				if strings.Contains(j.Class, frag) {
-					ctrls = append(ctrls, ctrlEntry{
-						Name:        j.Name,
-						Class:       j.Class,
-						URL:         j.URL,
-						Description: j.Description,
-						Offline:     j.Offline,
-					})
-					break
-				}
-			}
-		}
-		if len(ctrls) == 0 {
-			for _, j := range result.Jobs {
-				ctrls = append(ctrls, ctrlEntry{
-					Name:        j.Name,
-					Class:       j.Class,
-					URL:         j.URL,
-					Description: j.Description,
-					Offline:     j.Offline,
-				})
-			}
+		ctrls := make([]ctrlEntry, 0, len(dtos))
+		for _, d := range dtos {
+			ctrls = append(ctrls, ctrlEntry{
+				Name:        d.Name,
+				Class:       d.Class,
+				URL:         d.URL,
+				Description: d.Description,
+				Offline:     d.Offline,
+			})
 		}
 		return controllersLoaded{ctrls: ctrls}
 	}
 }
 
 func (s ControllerScreen) doSelect(name, ctrlURL string) tea.Cmd {
-	database, _ := s.db, s.dbPath
+	database := s.db
 	return func() tea.Msg {
-		profileName, _ := session.GetActiveProfileName(database)
-		if err := db.SetSetting(database, "active_controller."+profileName, name); err != nil {
-			return ctrlSelectDone{err: err}
-		}
-		if err := db.SetSetting(database, "active_controller_url."+profileName, ctrlURL); err != nil {
+		profileName := controller.GetActiveProfileName(database)
+		if err := controller.SetActiveController(database, profileName, name, ctrlURL); err != nil {
 			return ctrlSelectDone{err: err}
 		}
 		return ctrlSelectDone{name: name}

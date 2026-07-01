@@ -19,28 +19,6 @@ import (
 	"github.com/hyhy2001/bee/plugins/controller"
 )
 
-// jobDTO is the flat job list entry.
-type jobDTO struct {
-	Class       string `json:"_class"`
-	Name        string `json:"name"`
-	URL         string `json:"url"`
-	Color       string `json:"color"`
-	Description string `json:"description"`
-	Buildable   bool   `json:"buildable"`
-	LastBuild   *struct {
-		Number int    `json:"number"`
-		Result string `json:"result"`
-	} `json:"lastBuild"`
-}
-
-type buildDTO struct {
-	Number    int    `json:"number"`
-	Result    string `json:"result"`
-	Building  bool   `json:"building"`
-	Duration  int64  `json:"duration"`
-	Timestamp int64  `json:"timestamp"`
-}
-
 type controlledAgentGrant struct {
 	AgentName string
 	GrantID   string
@@ -49,75 +27,6 @@ type controlledAgentGrant struct {
 func getProfileName(database *sql.DB) string {
 	name, _ := session.GetActiveProfileName(database)
 	return name
-}
-
-// jobPathSegments converts "folder/job" to "folder/job/job" for Jenkins REST.
-func jobPathSegments(name string) string {
-	parts := strings.Split(name, "/")
-	escaped := make([]string, len(parts))
-	for i, p := range parts {
-		escaped[i] = url.PathEscape(p)
-	}
-	return strings.Join(escaped, "/job/")
-}
-
-func mapColor(color string) string {
-	running := strings.HasSuffix(color, "_anime")
-	base := strings.TrimSuffix(color, "_anime")
-	m := map[string]string{
-		"blue": "OK", "red": "FAIL", "yellow": "WARN",
-		"aborted": "ABORTED", "notbuilt": "NEW", "disabled": "DISABLED",
-	}
-	state, ok := m[base]
-	if !ok {
-		if base != "" {
-			state = strings.ToUpper(base)
-		} else {
-			state = "UNKNOWN"
-		}
-	}
-	if running {
-		return state + " (Run)"
-	}
-	return state
-}
-
-func jobType(class string) string {
-	if strings.Contains(class, "WorkflowJob") || strings.Contains(class, "Pipeline") {
-		return "PL"
-	}
-	if strings.Contains(class, "Folder") {
-		return "FD"
-	}
-	if strings.Contains(class, "FreeStyle") || strings.Contains(class, "Project") {
-		return "FS"
-	}
-	return "?"
-}
-
-func listJobs(client *api.Client) ([]jobDTO, error) {
-	tree := "jobs[_class,name,url,color,description,buildable,lastBuild[number,result,url]]"
-	var result struct {
-		Jobs []jobDTO `json:"jobs"`
-	}
-	if err := client.GetJSON(nil, "/api/json?tree="+url.QueryEscape(tree), &result); err != nil {
-		return nil, err
-	}
-	return result.Jobs, nil
-}
-
-func getJob(client *api.Client, name string) (*jobDTO, error) {
-	var j jobDTO
-	err := client.GetJSON(nil,
-		"/job/"+jobPathSegments(name)+"/api/json?tree=_class,name,url,color,description,buildable,lastBuild[number,result,url]",
-		&j)
-	if err != nil {
-		if strings.Contains(err.Error(), "404") {
-			return nil, nil
-		}
-		return nil, err
-	}
-	return &j, nil
 }
 
 func getText(client *api.Client, path string) (string, error) {
@@ -132,68 +41,6 @@ func getText(client *api.Client, path string) (string, error) {
 	}
 	b, err := io.ReadAll(resp.Body)
 	return string(b), err
-}
-
-func getTextWithContext(client *api.Client, ctx interface{ Done() <-chan struct{} }, path string) (string, error) {
-	return getText(client, path)
-}
-
-// streamBuildLog fetches progressive log text using X-Text-Size header.
-func streamBuildLog(client *api.Client, jobName string, buildNum int, start int64) (text string, newOffset int64, hasMore bool, err error) {
-	path := fmt.Sprintf("/job/%s/%d/logText/progressiveText?start=%d", jobPathSegments(jobName), buildNum, start)
-	resp, err := client.Do(nil, "GET", path, nil, "")
-	if err != nil {
-		return "", start, false, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		b, _ := io.ReadAll(resp.Body)
-		return "", start, false, fmt.Errorf("log stream: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
-	}
-	b, _ := io.ReadAll(resp.Body)
-	text = string(b)
-	newOffset = start + int64(len(b))
-	if v := resp.Header.Get("X-Text-Size"); v != "" {
-		if n, e := strconv.ParseInt(v, 10, 64); e == nil {
-			newOffset = n
-		}
-	}
-	hasMore = resp.Header.Get("X-More-Data") == "true"
-	return text, newOffset, hasMore, nil
-}
-
-func getLastBuildNumber(client *api.Client, jobName string) (int, error) {
-	var result struct {
-		LastBuild *struct {
-			Number int `json:"number"`
-		} `json:"lastBuild"`
-	}
-	if err := client.GetJSON(nil, "/job/"+jobPathSegments(jobName)+"/api/json?tree=lastBuild[number]", &result); err != nil {
-		return 0, err
-	}
-	if result.LastBuild == nil {
-		return 0, fmt.Errorf("no builds")
-	}
-	return result.LastBuild.Number, nil
-}
-
-func getBuildDetail(client *api.Client, jobName string, buildNum int) (*buildDTO, error) {
-	var b buildDTO
-	if err := client.GetJSON(nil, fmt.Sprintf("/job/%s/%d/api/json", jobPathSegments(jobName), buildNum), &b); err != nil {
-		return nil, err
-	}
-	return &b, nil
-}
-
-func getBuildHistory(client *api.Client, jobName string, count int) ([]buildDTO, error) {
-	var result struct {
-		Builds []buildDTO `json:"builds"`
-	}
-	path := fmt.Sprintf("/job/%s/api/json?tree=builds[number,result,building,duration,timestamp,url]{0,%d}", jobPathSegments(jobName), count)
-	if err := client.GetJSON(nil, path, &result); err != nil {
-		return nil, err
-	}
-	return result.Builds, nil
 }
 
 func xmlEscape(s string) string {
@@ -345,7 +192,7 @@ func jobListCmd(database *sql.DB, dbPath string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			jobs, err := listJobs(client)
+			jobs, err := ListJobs(cmd.Context(), client)
 			if err != nil {
 				return err
 			}
@@ -359,7 +206,7 @@ func jobListCmd(database *sql.DB, dbPath string) *cobra.Command {
 					if j.LastBuild != nil {
 						lastBuild = fmt.Sprintf("#%d %s", j.LastBuild.Number, j.LastBuild.Result)
 					}
-					rows = append(rows, []string{j.Name, jobType(j.Class), mapColor(j.Color), lastBuild, j.Description})
+					rows = append(rows, []string{j.Name, JobType(j.Class), MapColor(j.Color), lastBuild, j.Description})
 				}
 			} else {
 				tracked, _ := db.ListTracked(database, "job", profile, ctrlBase)
@@ -377,7 +224,7 @@ func jobListCmd(database *sql.DB, dbPath string) *cobra.Command {
 						if j.LastBuild != nil {
 							lastBuild = fmt.Sprintf("#%d %s", j.LastBuild.Number, j.LastBuild.Result)
 						}
-						rows = append(rows, []string{j.Name, jobType(j.Class), mapColor(j.Color), lastBuild, j.Description})
+						rows = append(rows, []string{j.Name, JobType(j.Class), MapColor(j.Color), lastBuild, j.Description})
 					}
 				}
 				for n := range trackedSet {
@@ -407,7 +254,7 @@ func jobGetCmd(database *sql.DB, dbPath string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			j, err := getJob(client, args[0])
+			j, err := GetJob(cmd.Context(), client, args[0])
 			if err != nil {
 				return err
 			}
@@ -420,8 +267,8 @@ func jobGetCmd(database *sql.DB, dbPath string) *cobra.Command {
 			}
 			cli.KV([][]string{
 				{"Name", j.Name},
-				{"Type", jobType(j.Class)},
-				{"Status", mapColor(j.Color)},
+				{"Type", JobType(j.Class)},
+				{"Status", MapColor(j.Color)},
 				{"Last Build", lastBuild},
 				{"Buildable", fmt.Sprintf("%v", j.Buildable)},
 				{"Description", j.Description},
@@ -451,7 +298,7 @@ func jobCreateCmd(database *sql.DB, dbPath string) *cobra.Command {
 			xmlBody := buildFreestyleXML(desc, shell, node, schedule)
 			path := "/createItem?name=" + url.QueryEscape(name)
 			if folder != "" {
-				path = "/job/" + jobPathSegments(folder) + path
+				path = "/job/" + JobPathSegments(folder) + path
 			}
 			if err := client.PostXML(cmd.Context(), path, xmlBody); err != nil {
 				return err
@@ -484,7 +331,7 @@ func jobCreateCmd(database *sql.DB, dbPath string) *cobra.Command {
 			xmlBody := buildPipelineXML(desc, pScript, schedule)
 			path := "/createItem?name=" + url.QueryEscape(name)
 			if folder != "" {
-				path = "/job/" + jobPathSegments(folder) + path
+				path = "/job/" + JobPathSegments(folder) + path
 			}
 			if err := client.PostXML(cmd.Context(), path, xmlBody); err != nil {
 				return err
@@ -515,7 +362,7 @@ func jobCreateCmd(database *sql.DB, dbPath string) *cobra.Command {
 			xmlBody := buildFolderXML(desc)
 			path := "/createItem?name=" + url.QueryEscape(name)
 			if folder != "" {
-				path = "/job/" + jobPathSegments(folder) + path
+				path = "/job/" + JobPathSegments(folder) + path
 			}
 			if err := client.PostXML(cmd.Context(), path, xmlBody); err != nil {
 				return err
@@ -547,7 +394,7 @@ func jobDeleteCmd(database *sql.DB, dbPath string) *cobra.Command {
 				return err
 			}
 			for _, name := range args {
-				if err := client.PostForm(cmd.Context(), "/job/"+jobPathSegments(name)+"/doDelete", nil); err != nil {
+				if err := client.PostForm(cmd.Context(), "/job/"+JobPathSegments(name)+"/doDelete", nil); err != nil {
 					cli.Error(fmt.Sprintf("Delete '%s': %v", name, err))
 					continue
 				}
@@ -596,7 +443,7 @@ func jobMoveCmd(database *sql.DB, dbPath string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			path := "/job/" + jobPathSegments(src) + "/move/move"
+			path := "/job/" + JobPathSegments(src) + "/move/move"
 			params := map[string]string{"destination": "/" + dst}
 			if err := client.PostForm(cmd.Context(), path, params); err != nil {
 				return err
@@ -661,9 +508,9 @@ func jobRunCmd(database *sql.DB, dbPath string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			path := "/job/" + jobPathSegments(name) + "/build"
+			path := "/job/" + JobPathSegments(name) + "/build"
 			if len(params) > 0 {
-				path = "/job/" + jobPathSegments(name) + "/buildWithParameters"
+				path = "/job/" + JobPathSegments(name) + "/buildWithParameters"
 				parts := make([]string, 0, len(params))
 				for _, p := range params {
 					parts = append(parts, p)
@@ -679,11 +526,11 @@ func jobRunCmd(database *sql.DB, dbPath string) *cobra.Command {
 				deadline := time.Now().Add(time.Duration(timeout) * time.Second)
 				for time.Now().Before(deadline) {
 					time.Sleep(3 * time.Second)
-					buildNum, err := getLastBuildNumber(client, name)
+					buildNum, err := GetLastBuildNumber(cmd.Context(), client, name)
 					if err != nil {
 						continue
 					}
-					b, err := getBuildDetail(client, name, buildNum)
+					b, err := GetBuildDetail(cmd.Context(), client, name, buildNum)
 					if err != nil {
 						continue
 					}
@@ -722,12 +569,12 @@ func jobStopCmd(database *sql.DB, dbPath string) *cobra.Command {
 				}
 				buildNum = n
 			} else {
-				buildNum, err = getLastBuildNumber(client, name)
+				buildNum, err = GetLastBuildNumber(cmd.Context(), client, name)
 				if err != nil {
 					return err
 				}
 			}
-			path := fmt.Sprintf("/job/%s/%d/stop", jobPathSegments(name), buildNum)
+			path := fmt.Sprintf("/job/%s/%d/stop", JobPathSegments(name), buildNum)
 			if err := client.PostForm(cmd.Context(), path, nil); err != nil {
 				return err
 			}
@@ -757,14 +604,14 @@ func jobLogCmd(database *sql.DB, dbPath string) *cobra.Command {
 				}
 				buildNum = n
 			} else {
-				buildNum, err = getLastBuildNumber(client, name)
+				buildNum, err = GetLastBuildNumber(cmd.Context(), client, name)
 				if err != nil {
 					return err
 				}
 			}
 			var offset int64
 			for {
-				text, newOffset, hasMore, err := streamBuildLog(client, name, buildNum, offset)
+				text, newOffset, hasMore, err := StreamBuildLog(cmd.Context(), client, name, buildNum, offset)
 				if err != nil {
 					return err
 				}
@@ -799,7 +646,7 @@ func jobStatusCmd(database *sql.DB, dbPath string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			builds, err := getBuildHistory(client, name, flagCount)
+			builds, err := GetBuildHistory(cmd.Context(), client, name, flagCount)
 			if err != nil {
 				return err
 			}
@@ -836,7 +683,7 @@ func jobUpdateCmd(database *sql.DB, dbPath string) *cobra.Command {
 				return err
 			}
 			xmlBody := buildFreestyleXML(desc, shell, node, schedule)
-			return client.PostXML(cmd.Context(), "/job/"+jobPathSegments(name)+"/config.xml", xmlBody)
+			return client.PostXML(cmd.Context(), "/job/"+JobPathSegments(name)+"/config.xml", xmlBody)
 		},
 	}
 	freestyle.Flags().StringVar(&desc, "description", "", "Job description")
@@ -856,7 +703,7 @@ func jobUpdateCmd(database *sql.DB, dbPath string) *cobra.Command {
 				return err
 			}
 			xmlBody := buildPipelineXML(desc, pScript, schedule)
-			return client.PostXML(cmd.Context(), "/job/"+jobPathSegments(name)+"/config.xml", xmlBody)
+			return client.PostXML(cmd.Context(), "/job/"+JobPathSegments(name)+"/config.xml", xmlBody)
 		},
 	}
 	pipeline.Flags().StringVar(&desc, "description", "", "Job description")
@@ -902,7 +749,7 @@ func jobApproveAgentCmd(database *sql.DB, dbPath string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			path := "/job/" + jobPathSegments(folder) + "/controlled-agent/grant"
+			path := "/job/" + JobPathSegments(folder) + "/controlled-agent/grant"
 			params := map[string]string{"agent": agent}
 			if err := client.PostForm(cmd.Context(), path, params); err != nil {
 				return err
@@ -934,7 +781,7 @@ func jobRemoveAgentCmd(database *sql.DB, dbPath string) *cobra.Command {
 			}
 			for _, g := range grants {
 				if g.AgentName == agent {
-					path := "/job/" + jobPathSegments(folder) + "/controlled-agent/grant/" + url.PathEscape(g.GrantID) + "/remove"
+					path := "/job/" + JobPathSegments(folder) + "/controlled-agent/grant/" + url.PathEscape(g.GrantID) + "/remove"
 					if err := client.PostForm(cmd.Context(), path, nil); err != nil {
 						return err
 					}

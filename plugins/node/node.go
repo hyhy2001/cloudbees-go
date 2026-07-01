@@ -179,19 +179,8 @@ func buildNodeFormPayload(name, remoteDir string, numExecutors int, labels, desc
 		"&json=" + url.QueryEscape(string(jsonBytes))
 }
 
-func getNodeConfigXML(client *api.Client, name string) (string, error) {
-	resp, err := client.Do(nil, "GET", "/computer/"+nodeSeg(name)+"/config.xml", nil, "")
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		b, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("GET config.xml: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
-	}
-	b, err := io.ReadAll(resp.Body)
-	return string(b), err
-}
+// getNodeConfigXML delegates to the exported service function.
+// ponytail: callers that don't have context pass nil; upgrade to context.Context when refactoring commands.
 
 // setXMLElement replaces or inserts a simple XML element.
 func setXMLElement(xmlStr, tag, value string) string {
@@ -426,7 +415,7 @@ func nodeGetCmd(database *sql.DB, dbPath string) *cobra.Command {
 			}
 
 			var cfg *nodeConfig
-			if xmlStr, err := getNodeConfigXML(client, name); err == nil {
+			if xmlStr, err := GetNodeConfigXML(cmd.Context(), client, name); err == nil {
 				c := parseNodeConfigXML(xmlStr)
 				cfg = &c
 			}
@@ -700,7 +689,7 @@ func nodeUpdateCmd(database *sql.DB, dbPath string) *cobra.Command {
 				return err
 			}
 			name := args[0]
-			xmlStr, err := getNodeConfigXML(client, name)
+			xmlStr, err := GetNodeConfigXML(cmd.Context(), client, name)
 			if err != nil {
 				return err
 			}
