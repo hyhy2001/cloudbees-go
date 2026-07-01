@@ -12,12 +12,12 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/hyhy2001/bee/internal/api"
-	"github.com/hyhy2001/bee/internal/cli"
-	"github.com/hyhy2001/bee/internal/db"
-	"github.com/hyhy2001/bee/internal/session"
-	"github.com/hyhy2001/bee/plugins/controller"
-	node "github.com/hyhy2001/bee/plugins/node"
+	"bee/internal/api"
+	"bee/internal/cli"
+	"bee/internal/db"
+	"bee/internal/session"
+	"bee/plugins/controller"
+	node "bee/plugins/node"
 )
 
 type controlledAgentGrant struct {

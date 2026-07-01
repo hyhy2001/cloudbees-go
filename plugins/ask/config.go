@@ -3,7 +3,7 @@ package ask
 import (
 	"strings"
 
-	"github.com/hyhy2001/bee/internal/config"
+	"bee/internal/config"
 )
 
 func lmURL() string    { return config.LMURL() }

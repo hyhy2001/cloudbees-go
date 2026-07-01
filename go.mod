@@ -1,4 +1,4 @@
-module github.com/hyhy2001/bee
+module bee
 
 go 1.25.0
 

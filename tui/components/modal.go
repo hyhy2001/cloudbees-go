@@ -5,7 +5,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/hyhy2001/bee/tui/theme"
+	"bee/tui/theme"
 )
 
 // ConfirmResultMsg carries the user's yes/no answer.

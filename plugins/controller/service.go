@@ -5,9 +5,9 @@ import (
 	"context"
 	"database/sql"
 
-	"github.com/hyhy2001/bee/internal/api"
-	"github.com/hyhy2001/bee/internal/db"
-	"github.com/hyhy2001/bee/internal/session"
+	"bee/internal/api"
+	"bee/internal/db"
+	"bee/internal/session"
 )
 
 // ControllerDTO is the exported controller view.

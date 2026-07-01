@@ -1,6 +1,6 @@
 VERSION := $(shell cat VERSION 2>/dev/null || echo "1.0.0")
 BINARY  := dist/bee
-MODULE  := github.com/hyhy2001/bee
+MODULE  := bee
 
 # Build-time LM credentials — read from bee.lm.json if present
 -include .bee-build.mk

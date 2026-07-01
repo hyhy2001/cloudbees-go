@@ -10,10 +10,10 @@ import (
 	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 
-	jobo "github.com/hyhy2001/bee/plugins/job"
-	"github.com/hyhy2001/bee/plugins/controller"
-	"github.com/hyhy2001/bee/tui/components"
-	"github.com/hyhy2001/bee/tui/theme"
+	jobo "bee/plugins/job"
+	"bee/plugins/controller"
+	"bee/tui/components"
+	"bee/tui/theme"
 )
 
 // jobEntry is the TUI job row.

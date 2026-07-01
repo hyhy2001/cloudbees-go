@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/hyhy2001/bee/internal/api"
+	"bee/internal/api"
 )
 
 // JobDTO is the exported flat job list entry.

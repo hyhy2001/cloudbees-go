@@ -11,8 +11,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/hyhy2001/bee/internal/cli"
-	"github.com/hyhy2001/bee/internal/session"
+	"bee/internal/cli"
+	"bee/internal/session"
 )
 
 // Register adds auth subcommands to root.

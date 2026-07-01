@@ -6,14 +6,14 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/hyhy2001/bee/internal/db"
-	"github.com/hyhy2001/bee/plugins/ask"
-	"github.com/hyhy2001/bee/plugins/auth"
-	"github.com/hyhy2001/bee/plugins/controller"
-	"github.com/hyhy2001/bee/plugins/cred"
-	"github.com/hyhy2001/bee/plugins/job"
-	"github.com/hyhy2001/bee/plugins/node"
-	"github.com/hyhy2001/bee/tui"
+	"bee/internal/db"
+	"bee/plugins/ask"
+	"bee/plugins/auth"
+	"bee/plugins/controller"
+	"bee/plugins/cred"
+	"bee/plugins/job"
+	"bee/plugins/node"
+	"bee/tui"
 )
 
 var version = "1.0.0"

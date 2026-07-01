@@ -9,10 +9,10 @@ import (
 	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 
-	nodepkg "github.com/hyhy2001/bee/plugins/node"
-	"github.com/hyhy2001/bee/plugins/controller"
-	"github.com/hyhy2001/bee/tui/components"
-	"github.com/hyhy2001/bee/tui/theme"
+	nodepkg "bee/plugins/node"
+	"bee/plugins/controller"
+	"bee/tui/components"
+	"bee/tui/theme"
 )
 
 // nodeEntry is a single node row.

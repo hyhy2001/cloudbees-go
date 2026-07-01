@@ -9,7 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/hyhy2001/bee/tui/theme"
+	"bee/tui/theme"
 )
 
 // TableModel is a filterable table component.

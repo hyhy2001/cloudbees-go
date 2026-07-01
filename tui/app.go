@@ -9,8 +9,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/hyhy2001/bee/tui/screens"
-	"github.com/hyhy2001/bee/tui/theme"
+	"bee/tui/screens"
+	"bee/tui/theme"
 )
 
 // Tab names.

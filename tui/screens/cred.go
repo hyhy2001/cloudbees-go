@@ -9,10 +9,10 @@ import (
 	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 
-	credpkg "github.com/hyhy2001/bee/plugins/cred"
-	"github.com/hyhy2001/bee/plugins/controller"
-	"github.com/hyhy2001/bee/tui/components"
-	"github.com/hyhy2001/bee/tui/theme"
+	credpkg "bee/plugins/cred"
+	"bee/plugins/controller"
+	"bee/tui/components"
+	"bee/tui/theme"
 )
 
 // credEntry is a single credential row.

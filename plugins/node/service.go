@@ -9,7 +9,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/hyhy2001/bee/internal/api"
+	"bee/internal/api"
 )
 
 // NodeDTO is the exported lightweight node view.

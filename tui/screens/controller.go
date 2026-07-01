@@ -9,11 +9,11 @@ import (
 	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/hyhy2001/bee/internal/session"
-	"github.com/hyhy2001/bee/internal/api"
-	"github.com/hyhy2001/bee/plugins/controller"
-	"github.com/hyhy2001/bee/tui/components"
-	"github.com/hyhy2001/bee/tui/theme"
+	"bee/internal/session"
+	"bee/internal/api"
+	"bee/plugins/controller"
+	"bee/tui/components"
+	"bee/tui/theme"
 )
 
 // ctrlEntry is a single controller row.

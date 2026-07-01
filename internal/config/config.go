@@ -11,12 +11,12 @@ package config
 import (
 	"os"
 
-	"github.com/hyhy2001/bee/internal/obfuscate"
+	"bee/internal/obfuscate"
 )
 
 // Baked build-time values — set via:
 //
-//	go build -ldflags "-X github.com/hyhy2001/bee/internal/config.BakedLMURL=<xor>"
+//	go build -ldflags "-X bee/internal/config.BakedLMURL=<xor>"
 //
 // All values are XOR-obfuscated (obfuscate.Encode). Empty string = not set.
 var (

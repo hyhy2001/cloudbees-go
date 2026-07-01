@@ -6,7 +6,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/hyhy2001/bee/internal/api"
+	"bee/internal/api"
 )
 
 // CredDTO is the exported credential view.
