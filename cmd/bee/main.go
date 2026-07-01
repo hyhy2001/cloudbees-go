@@ -12,6 +12,7 @@ import (
 	"github.com/hyhy2001/bee/plugins/cred"
 	"github.com/hyhy2001/bee/plugins/job"
 	"github.com/hyhy2001/bee/plugins/node"
+	"github.com/hyhy2001/bee/tui"
 )
 
 var version = "1.0.0"
@@ -28,13 +29,26 @@ func main() {
 		os.Exit(1)
 	}
 
+	var flagUI bool
+
 	root := &cobra.Command{
-		Use:     "bee",
-		Short:   "CloudBees CI / Jenkins CLI",
-		Version: version,
-		SilenceUsage: true,
+		Use:           "bee",
+		Short:         "CloudBees CI / Jenkins CLI",
+		Version:       version,
+		SilenceUsage:  true,
 		SilenceErrors: true,
+		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			if flagUI {
+				if err := tui.Run(database, dbPath); err != nil {
+					fmt.Fprintf(os.Stderr, "tui error: %v\n", err)
+				}
+				os.Exit(0)
+			}
+			return nil
+		},
 	}
+
+	root.PersistentFlags().BoolVarP(&flagUI, "ui", "u", false, "Launch interactive TUI")
 
 	// Register plugins
 	auth.Register(root, database, dbPath)
