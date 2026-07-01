@@ -51,10 +51,13 @@ var stopWords = map[string]bool{
 	"under": true, "above": true, "below": true, "per": true, "via": true,
 	"come": true, "comes": true, "coming": true,
 	"jenkins": true, "name": true,
-	"please": true, "guide": true, "tell": true, "show": true, "help": true,
+	// Courtesy/polite filler that inflates gate denominator without signal.
+	// NOTE: "what", "who" are intentionally NOT stopwords so synonym "what→concept"
+	// and "who→profiles" can fire. "cloudbees" also NOT a stopword.
+	"please": true, "guide": true, "tell": true,
 	"explain": true, "describe": true, "teach": true, "want": true,
 	"trying": true, "try": true, "let": true, "give": true,
-	"find": true, "know": true, "understand": true, "using": true, "use": true,
+	"know": true, "understand": true, "using": true, "use": true,
 }
 
 // ─── Synonyms ─────────────────────────────────────────────────────────────────
@@ -77,7 +80,8 @@ var synonyms = map[string]string{
 	"output": "log", "history": "status", "recent": "status", "runs": "status",
 	"results": "status", "track": "track", "tracking": "track", "pin": "track",
 	"what": "concept", "explain": "concept", "define": "concept",
-	"meaning": "concept", "mine": "mine",
+	"meaning": "concept", "show": "concept", "help": "concept",
+	"find": "get", "mine": "mine",
 	"authenticate": "login", "connect": "login", "disconnect": "logout",
 	"logged": "login", "expired": "login",
 	"agent": "node", "slave": "node", "worker": "node", "executor": "node",

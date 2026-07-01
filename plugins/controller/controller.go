@@ -4,9 +4,10 @@ package controller
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -236,14 +237,30 @@ func GetActiveControllerClient(database *sql.DB, dbPath string) (*api.Client, er
 	return api.New(s.Profile.ServerURL, s.BasicToken), nil
 }
 
-// resolveURL follows a redirect to find the real controller URL.
+// resolveURL follows the CJOC 302 redirect to find the real controller URL,
+// stripping SSO suffixes (mirrors TS resolveControllerUrl).
 func resolveURL(ctx context.Context, client *api.Client, cjocURL string) string {
-	req, err := client.Do(ctx, "GET", "", nil, "")
-	if err != nil || req == nil {
+	httpClient := &http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse // stop at first redirect
+		},
+		Timeout: 10 * time.Second,
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, cjocURL, nil)
+	if err != nil {
 		return cjocURL
 	}
-	req.Body.Close()
-	// Simple probe: hit the CJOC URL directly via stdlib
-	_ = json.NewEncoder(nil) // ensure json imported
-	return cjocURL // ponytail: redirect following — use net/http client to follow
+	req.Header.Set("Authorization", "Basic "+client.BasicToken)
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return cjocURL
+	}
+	resp.Body.Close()
+	if loc := resp.Header.Get("Location"); loc != "" {
+		if strings.Contains(loc, "operations-center-sso-navigate") {
+			return loc[:strings.Index(loc, "operations-center-sso-navigate")]
+		}
+		return loc
+	}
+	return cjocURL
 }
