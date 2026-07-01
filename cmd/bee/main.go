@@ -7,6 +7,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/hyhy2001/bee/internal/db"
+	"github.com/hyhy2001/bee/plugins/ask"
 	"github.com/hyhy2001/bee/plugins/auth"
 	"github.com/hyhy2001/bee/plugins/controller"
 	"github.com/hyhy2001/bee/plugins/cred"
@@ -56,6 +57,7 @@ func main() {
 	cred.Register(root, database, dbPath)
 	node.Register(root, database, dbPath)
 	job.Register(root, database, dbPath)
+	ask.Register(root, database, dbPath)
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)

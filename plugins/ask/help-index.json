@@ -1,0 +1,1202 @@
+[
+  {
+    "id": "concept.logout",
+    "kind": "concept",
+    "title": "logout",
+    "terms": [
+      "logout",
+      "log out",
+      "sign out",
+      "signout",
+      "disconnect",
+      "log off",
+      "logoff",
+      "sign off",
+      "remove credentials",
+      "delete session",
+      "exit session",
+      "revoke token"
+    ],
+    "answer": "Use `bee auth logout` to sign out and remove stored credentials for a profile. The profile entry is deleted; re-run `bee auth login` to reconnect.",
+    "commands": [
+      "bee auth logout",
+      "bee auth logout --profile <profile>"
+    ],
+    "related": [
+      "bee auth login",
+      "bee auth delete"
+    ]
+  },
+  {
+    "id": "concept.profile",
+    "kind": "concept",
+    "title": "profile",
+    "terms": [
+      "profile",
+      "profiles",
+      "switch profile",
+      "active profile",
+      "account",
+      "accounts",
+      "login target",
+      "who am I",
+      "current user",
+      "my account",
+      "what is a profile",
+      "what is profile",
+      "am I logged in"
+    ],
+    "answer": "A profile is a saved login target for one CloudBees server, including server URL, username, and encrypted token.",
+    "commands": [
+      "bee auth profiles",
+      "bee auth use <profile>",
+      "bee auth login --profile <profile>"
+    ],
+    "related": [
+      "bee auth logout",
+      "bee auth delete --profile <profile>"
+    ]
+  },
+  {
+    "id": "concept.controller",
+    "kind": "concept",
+    "title": "controller",
+    "terms": [
+      "controller",
+      "master",
+      "instance",
+      "what is a controller",
+      "jenkins controller",
+      "cloudbees controller",
+      "which controller",
+      "current controller",
+      "controller concept",
+      "multiple controllers"
+    ],
+    "answer": "A controller is the active Jenkins or CloudBees controller that job, node, and credential commands run against.",
+    "commands": [
+      "bee controller list",
+      "bee controller select <name>",
+      "bee controller current"
+    ],
+    "related": [
+      "bee job list",
+      "bee node list",
+      "bee cred list"
+    ]
+  },
+  {
+    "id": "concept.credential-store",
+    "kind": "concept",
+    "title": "credential store",
+    "terms": [
+      "credential store",
+      "system store",
+      "user store",
+      "store user",
+      "store system",
+      "where credentials saved",
+      "credential location"
+    ],
+    "answer": "A credential can live in the system store (shared, all jobs) or user store (personal). Pick the correct store before listing, creating, getting, or deleting credentials.",
+    "commands": [
+      "bee cred list --store system",
+      "bee cred list --store user",
+      "bee cred create --store user"
+    ],
+    "related": [
+      "bee cred get <cred_id>",
+      "bee cred delete <cred_ids...> --store system"
+    ]
+  },
+  {
+    "id": "concept.credential-create",
+    "kind": "concept",
+    "title": "create credential",
+    "terms": [
+      "create credential",
+      "add credential",
+      "new credential",
+      "store password",
+      "save secret",
+      "add ssh key",
+      "create secret",
+      "register credential",
+      "username password credential",
+      "api token credential"
+    ],
+    "answer": "Use `bee cred create` with flags only — there is NO positional argument. The credential ID is set via `--id` (auto-generated if omitted), never as a bare word. Use `--username` + `--password` for Username+Password, or `--secret-text` for a token/API key.",
+    "commands": [
+      "bee cred create --username deploy-bot --password s3cr3t --id deploy-creds",
+      "bee cred create --secret-text ghp_xxxxx --id github-token",
+      "bee cred create --username admin --password pass"
+    ],
+    "related": [
+      "bee cred update <cred_id>",
+      "bee cred get <cred_id>"
+    ]
+  },
+  {
+    "id": "concept.node-offline",
+    "kind": "concept",
+    "title": "node offline",
+    "terms": [
+      "offline node",
+      "node status",
+      "bring node online",
+      "mark node offline",
+      "pause scheduling",
+      "disable agent",
+      "suspend agent",
+      "deactivate node",
+      "take agent offline",
+      "what is node offline",
+      "what does offline mean"
+    ],
+    "answer": "A node marked offline still exists but temporarily refuses new work. Use offline to pause scheduling and online to allow the agent to accept jobs again.",
+    "commands": [
+      "bee node offline <name>",
+      "bee node online <name>",
+      "bee node list"
+    ],
+    "related": [
+      "bee node get <name>",
+      "bee node delete <names...>"
+    ]
+  },
+  {
+    "id": "concept.node-delete",
+    "kind": "concept",
+    "title": "delete or remove agent",
+    "terms": [
+      "delete node",
+      "remove agent",
+      "remove node",
+      "delete agent",
+      "unregister agent",
+      "decommission agent",
+      "get rid of node",
+      "delete an agent",
+      "remove an agent",
+      "how to delete agent",
+      "how to remove agent"
+    ],
+    "answer": "To permanently remove an agent from Jenkins, use bee node delete. This deletes the node entirely — use bee node offline instead if you only want to pause it.",
+    "commands": [
+      "bee node delete <names...>",
+      "bee node list",
+      "bee node get <name>"
+    ],
+    "related": [
+      "bee node offline <name>",
+      "bee node online <name>"
+    ]
+  },
+  {
+    "id": "concept.job-run-stop",
+    "kind": "concept",
+    "title": "run or stop job",
+    "terms": [
+      "run job",
+      "trigger build",
+      "start build",
+      "stop build",
+      "running build",
+      "active build",
+      "run jenkins job",
+      "execute jenkins job",
+      "wait for build",
+      "wait build finish",
+      "build finish",
+      "wait for job",
+      "kick off build",
+      "cancel build",
+      "abort build"
+    ],
+    "answer": "Use run to trigger a new build. Use stop to halt the build currently running for that job. Add --wait to block until the build completes.",
+    "commands": [
+      "bee job run <name>",
+      "bee job run <name> --wait",
+      "bee job stop <name>",
+      "bee job log <name> --follow"
+    ],
+    "related": [
+      "bee job get <name>",
+      "bee job status <name>"
+    ]
+  },
+  {
+    "id": "concept.job-history",
+    "kind": "concept",
+    "title": "view build history",
+    "terms": [
+      "build history",
+      "job history",
+      "past builds",
+      "previous builds",
+      "list builds",
+      "see builds",
+      "view builds",
+      "recent builds",
+      "old builds",
+      "build results",
+      "did the build pass",
+      "was the last build green",
+      "how did the build go",
+      "build log history"
+    ],
+    "answer": "Use status to see the recent build history for a job — the last few runs with their result, duration, and timestamp. Add --count to change how many builds are shown. (The history alias does the same thing.)",
+    "commands": [
+      "bee job status <name>",
+      "bee job status <name> --count 20"
+    ],
+    "related": [
+      "bee job get <name>",
+      "bee job log <name>"
+    ]
+  },
+  {
+    "id": "troubleshooting.403",
+    "kind": "troubleshooting",
+    "title": "403 error",
+    "terms": [
+      "403",
+      "forbidden",
+      "permission denied",
+      "access denied",
+      "not authorized",
+      "403 error",
+      "getting 403"
+    ],
+    "answer": "A 403 usually means the current account lacks permission on the active controller or requested resource.",
+    "commands": [
+      "bee controller current",
+      "bee controller list",
+      "bee auth profiles"
+    ],
+    "related": [
+      "bee auth login",
+      "bee auth use <profile>"
+    ]
+  },
+  {
+    "id": "troubleshooting.login",
+    "kind": "troubleshooting",
+    "title": "login problem",
+    "terms": [
+      "login failed",
+      "auth failed",
+      "token invalid",
+      "cannot login",
+      "wrong token",
+      "wrong password",
+      "authentication error",
+      "token expired",
+      "bad credentials",
+      "token stopped working",
+      "cannot log in",
+      "token not working"
+    ],
+    "answer": "If login fails, check the server URL, username, API token, and active profile. Log in again if the token is wrong or expired.",
+    "commands": [
+      "bee auth login",
+      "bee auth profiles",
+      "bee auth use <profile>"
+    ],
+    "related": [
+      "bee auth logout",
+      "bee controller list"
+    ]
+  },
+  {
+    "id": "troubleshooting.ask-no-results",
+    "kind": "troubleshooting",
+    "title": "ask no results",
+    "terms": [
+      "ask no results",
+      "ask empty",
+      "no results",
+      "search failed",
+      "not found",
+      "bee ask no results",
+      "bee ask finds nothing",
+      "ask command no results",
+      "ask returns nothing"
+    ],
+    "answer": "When bee ask returns no results, simplify your query to one keyword noun or verb. For example, use 'job', 'credential', 'login', or 'node' instead of a full sentence.",
+    "commands": [
+      "bee ask job",
+      "bee ask credential",
+      "bee ask login",
+      "bee ask node",
+      "bee --help"
+    ],
+    "related": [
+      "bee job list",
+      "bee cred list",
+      "bee node list"
+    ]
+  },
+  {
+    "id": "troubleshooting.node-connect",
+    "kind": "troubleshooting",
+    "title": "node connection issue",
+    "terms": [
+      "ssh node",
+      "node connect",
+      "agent not connecting",
+      "jnlp agent",
+      "node unreachable",
+      "agent disconnecting",
+      "node keeps disconnecting",
+      "agent not showing up"
+    ],
+    "answer": "If an agent keeps disconnecting or fails to connect, check the launcher type, host, credential, Java path, and whether the node is offline or online.",
+    "commands": [
+      "bee node get <name>",
+      "bee node list",
+      "bee node update <name>"
+    ],
+    "related": [
+      "bee node online <name>",
+      "bee node create <name> --remote-dir <dir>"
+    ]
+  },
+  {
+    "id": "troubleshooting.agent-offline",
+    "kind": "troubleshooting",
+    "title": "node offline unexpectedly fix",
+    "terms": [
+      "my agent is offline",
+      "agent is offline",
+      "agent went offline",
+      "node is offline",
+      "node went offline",
+      "agent not running",
+      "node not picking up builds",
+      "builds not starting on agent",
+      "agent stopped working",
+      "node shows offline",
+      "fix offline agent",
+      "agent unavailable"
+    ],
+    "answer": "If a node is unexpectedly offline (not running builds), first check its status with bee node get, then bring it back with bee node online. If it stays offline, it may have lost its connection — check the launcher, host, and credential.",
+    "commands": [
+      "bee node online <name>",
+      "bee node get <name>",
+      "bee node list"
+    ],
+    "related": [
+      "bee node update <name>",
+      "bee node create <name> --remote-dir <dir>"
+    ]
+  },
+  {
+    "id": "concept.pipeline",
+    "kind": "concept",
+    "title": "pipeline job",
+    "terms": [
+      "pipeline",
+      "pipeline job",
+      "what is a pipeline",
+      "pipeline script",
+      "declarative pipeline",
+      "jenkins pipeline",
+      "workflow job",
+      "pipeline concept",
+      "pipeline vs freestyle"
+    ],
+    "answer": "A Pipeline job runs a Jenkins Pipeline script (Declarative or Scripted) instead of individual build steps. Use 'bee job create pipeline' to create one from a .groovy file or inline script. Parameters defined in the script are automatically detected.",
+    "commands": [
+      "bee job create pipeline <name> --script <file>",
+      "bee job update pipeline <name> --script <file>"
+    ],
+    "related": [
+      "bee job create freestyle",
+      "bee job run <name>",
+      "bee job list"
+    ]
+  },
+  {
+    "id": "concept.create-pipeline",
+    "kind": "concept",
+    "title": "create or update pipeline",
+    "terms": [
+      "create pipeline",
+      "update pipeline",
+      "pipeline create",
+      "how to create a pipeline",
+      "how to make a pipeline",
+      "pipeline from file",
+      "import pipeline",
+      "pipeline script file",
+      "new pipeline job"
+    ],
+    "answer": "Create a Pipeline with 'bee job create pipeline <name> --script <file>'. The --script flag accepts a file path or inline Groovy string. Use --node to override the agent, --schedule for cron, --email for notifications, and --param-def to add or override build parameters. The script is validated against the Jenkins server before creation.",
+    "commands": [
+      "bee job create pipeline <name> --script pipe.groovy",
+      "bee job create pipeline <name> --script 'pipeline { agent any; stages { ... } }'",
+      "bee job create pipeline <name> --script pipe.groovy --node linux --schedule \"H 8 * * *\"",
+      "bee job update pipeline <name> --script pipe.groovy"
+    ],
+    "related": [
+      "bee job create freestyle",
+      "bee job list",
+      "bee job run <name>"
+    ]
+  },
+  {
+    "id": "concept.pipeline-params",
+    "kind": "concept",
+    "title": "pipeline build parameters",
+    "terms": [
+      "pipeline parameters",
+      "pipeline param-def",
+      "auto detect parameters",
+      "parameters directive",
+      "pipeline param from script",
+      "pipeline parameters block",
+      "extract parameters from pipeline",
+      "parameters in pipeline script"
+    ],
+    "answer": "When creating a Pipeline job, parameters declared in the script's 'parameters {}' block are automatically detected and configured. Use --param-def to add extra parameters or override defaults. All types are supported: string, choice, booleanParam, text, and password.",
+    "commands": [
+      "bee job create pipeline <name> --script pipe.groovy",
+      "bee job create pipeline <name> --script pipe.groovy --param-def EXTRA=value"
+    ],
+    "related": [
+      "bee job run <name> -p KEY=value",
+      "bee job update pipeline <name>"
+    ]
+  },
+  {
+    "id": "troubleshooting.pipeline-validate",
+    "kind": "troubleshooting",
+    "title": "pipeline validation error",
+    "terms": [
+      "pipeline validation",
+      "invalid pipeline script",
+      "pipeline syntax error",
+      "pipeline validate failed",
+      "script not valid",
+      "pipeline error",
+      "validation failed",
+      "pipeline compile error",
+      "pipeline script error"
+    ],
+    "answer": "The pipeline script is validated against the Jenkins Pipeline Validation API before creation. If validation fails, fix the script syntax and try again. Common issues: missing 'pipeline' block, unmatched braces, invalid agent, or missing 'stages' section.",
+    "commands": [
+      "bee job create pipeline <name> --script pipe.groovy"
+    ],
+    "related": [
+      "bee job update pipeline <name> --script pipe.groovy"
+    ]
+  },
+  {
+    "id": "concept.mine-vs-all",
+    "kind": "concept",
+    "title": "Mine vs tracked items",
+    "terms": [
+      "mine",
+      "show all",
+      "my items",
+      "tracked items",
+      "see everything",
+      "--all flag",
+      "mine list",
+      "what is mine",
+      "my tracked",
+      "mine vs all"
+    ],
+    "answer": "By default, bee list commands show only items you are tracking (Mine). Pass --all to see every item on the server regardless of ownership.",
+    "commands": [
+      "bee job list --all",
+      "bee node list --all",
+      "bee cred list --all"
+    ],
+    "related": [
+      "bee job track <names>",
+      "bee node track <names>",
+      "bee cred track <cred_ids>"
+    ]
+  },
+  {
+    "id": "concept.credential-types",
+    "kind": "concept",
+    "title": "credential types",
+    "terms": [
+      "username password credential",
+      "secret text credential",
+      "api key credential",
+      "token credential",
+      "plain text secret",
+      "cred type",
+      "which credential type",
+      "what type of credential",
+      "credential types",
+      "supported credential types"
+    ],
+    "answer": "bee supports two credential types: Username+Password (--username + --password) and SecretText (--secret-text) for plain-text tokens, API keys, or SSH keys.",
+    "commands": [
+      "bee cred create --username <u> --password <p>",
+      "bee cred create --secret-text <value>"
+    ],
+    "related": [
+      "bee cred list",
+      "bee cred get <cred_id>",
+      "bee cred update <cred_id>"
+    ]
+  },
+  {
+    "id": "concept.folders",
+    "kind": "concept",
+    "title": "folders and job organisation",
+    "terms": [
+      "folder",
+      "job folder",
+      "nested job",
+      "organize jobs",
+      "group jobs",
+      "subfolder",
+      "directory of jobs",
+      "create folder",
+      "move to folder",
+      "what is a folder",
+      "job organization",
+      "what is folder",
+      "folders concept",
+      "how do folders work",
+      "how to use folders"
+    ],
+    "answer": "Folders are containers for jobs. Create a folder with 'job create folder', then pass --folder <path> when creating or moving jobs into it.",
+    "commands": [
+      "bee job create folder <name>",
+      "bee job create freestyle <name> --folder <path>",
+      "bee job create pipeline <name> --folder <path> --script <file>",
+      "bee job move <source> <folder>"
+    ],
+    "related": [
+      "bee job list --recursive",
+      "bee job delete <names>"
+    ]
+  },
+  {
+    "id": "concept.agent-launcher",
+    "kind": "concept",
+    "title": "agent launcher type",
+    "terms": [
+      "ssh launcher",
+      "jnlp launcher",
+      "inbound agent",
+      "agent launch method",
+      "permanent agent ssh",
+      "connect via ssh",
+      "connect via jnlp"
+    ],
+    "answer": "When creating a node, omit --host to create a JNLP/Inbound agent (agent connects to controller). Add --host <ip> to create an SSH agent (controller connects to agent).",
+    "commands": [
+      "bee node create <name> --remote-dir <dir> --host <host> --cred-id <id>",
+      "bee node create <name> --remote-dir <dir>"
+    ],
+    "related": [
+      "bee node update <name> --launcher ssh",
+      "bee node update <name> --launcher jnlp"
+    ]
+  },
+  {
+    "id": "concept.build-params",
+    "kind": "concept",
+    "title": "build parameters",
+    "terms": [
+      "build parameter",
+      "job parameter",
+      "parameterized build",
+      "pass param to build",
+      "run with parameter",
+      "param value",
+      "--param flag",
+      "how do build parameters work",
+      "how to pass parameters",
+      "what are build parameters"
+    ],
+    "answer": "Pass build parameters to a job run with -p KEY=value (repeatable). Define parameters on the job itself with --param-def NAME=default when creating or updating. For Pipeline jobs, parameters declared in the script are automatically detected.",
+    "commands": [
+      "bee job run <name> -p KEY=value",
+      "bee job run <name> -p KEY=value -p OTHER=value",
+      "bee job create freestyle <name> --param-def VERSION=latest",
+      "bee job create pipeline <name> --script pipe.groovy --param-def EXTRA=value"
+    ],
+    "related": [
+      "bee job update freestyle <name> --param-def KEY=default",
+      "bee job update freestyle <name> --clear-params"
+    ]
+  },
+  {
+    "id": "concept.controlled-agent",
+    "kind": "concept",
+    "title": "Folders Plus controlled agent",
+    "terms": [
+      "controlled agent",
+      "controlled-agent",
+      "folders plus",
+      "agent whitelist",
+      "approve agent for folder",
+      "restrict agent to folder",
+      "controlled agent mode",
+      "foldersplus",
+      "folder agent grant",
+      "agent approval",
+      "what is controlled agent",
+      "what is folders plus"
+    ],
+    "answer": "Folders Plus controlled-agent mode restricts which agents can run builds from a folder. Enable it on a node with --controlled-agent true, then approve the node for each folder that needs it.",
+    "commands": [
+      "bee node update <name> --controlled-agent true",
+      "bee job approve-agent <folder> <agent>",
+      "bee job list-agents <folder>",
+      "bee job remove-agent <folder> <agent>"
+    ],
+    "related": [
+      "bee node list",
+      "bee job list"
+    ]
+  },
+  {
+    "id": "concept.node-labels",
+    "kind": "concept",
+    "title": "node labels",
+    "terms": [
+      "node label",
+      "agent label",
+      "what are labels",
+      "node tag",
+      "assign job to node",
+      "restrict job to agent",
+      "labels flag",
+      "explain node labels"
+    ],
+    "answer": "Node labels (tags) let you restrict which agents run a job. Set labels on a node with --labels, then configure the job to require a specific label so builds only run on matching agents.",
+    "commands": [
+      "bee node create <name> --remote-dir <dir> --labels <labels>",
+      "bee node update <name> --labels <labels>"
+    ],
+    "related": [
+      "bee node list",
+      "bee node get <name>"
+    ]
+  },
+  {
+    "id": "concept.getting-started",
+    "kind": "concept",
+    "title": "getting started",
+    "terms": [
+      "getting started",
+      "get started",
+      "how do i start",
+      "how do i begin",
+      "i am new",
+      "new user",
+      "first time",
+      "where do i start",
+      "beginner",
+      "what do i do first",
+      "how to use this",
+      "quick start",
+      "setup steps",
+      "first steps",
+      "how does this work",
+      "newbie",
+      "newcomer",
+      "novice",
+      "how to use bee",
+      "how do i use it",
+      "how to use it",
+      "just started",
+      "introduction",
+      "intro",
+      "tutorial",
+      "onboarding",
+      "don't know where",
+      "dont know where",
+      "where to start",
+      "no idea",
+      "help me start",
+      "how to begin",
+      "what to do first"
+    ],
+    "answer": "Full setup workflow: (1) Log in: 'bee auth login'. (2) Select a controller: 'bee controller select my-controller'. (3) Create a credential (e.g. SSH key): 'bee cred create --id my-ssh-key --secret-text \"$(cat ~/.ssh/id_rsa)\"'. (4) Create a node and attach the credential: 'bee node create my-agent --host 192.168.1.10 --cred-id my-ssh-key --labels linux'. (5) Create a job assigned to that node: 'bee job create freestyle my-job --shell \"make build\" --node linux'. (6) Run the job: 'bee job run my-job --wait'.",
+    "commands": [
+      "bee auth login",
+      "bee controller select <name>",
+      "bee cred create --id <id> --secret-text <value>",
+      "bee node create <name> --host <host> --cred-id <id> --labels <labels>",
+      "bee job create freestyle <name> --shell <cmd> --node <label>",
+      "bee job run <name> --wait"
+    ],
+    "related": [
+      "bee --help"
+    ]
+  },
+  {
+    "id": "concept.tui",
+    "kind": "concept",
+    "title": "launch interactive ui tui",
+    "terms": [
+      "open the interactive ui",
+      "launch the tui",
+      "interactive mode",
+      "open the ui",
+      "start the tui",
+      "text user interface",
+      "visual mode",
+      "interactive interface",
+      "run the gui",
+      "open dashboard",
+      "browse visually",
+      "use the ui instead",
+      "graphical interface"
+    ],
+    "answer": "Launch the interactive terminal UI with the --ui flag: bee --ui. It is a top-level flag, not a subcommand (there is no 'bee ui'). Inside the TUI use Tab/number keys to switch tabs, arrows to move, Enter to act, ? for help, Ctrl+q to quit.",
+    "commands": [
+      "bee --ui"
+    ],
+    "related": [
+      "bee --help"
+    ]
+  },
+  {
+    "id": "concept.overview",
+    "kind": "concept",
+    "title": "bee tool overview",
+    "terms": [
+      "what can this tool do",
+      "what does bee do",
+      "what is bee",
+      "what can i do",
+      "what commands are available",
+      "list of commands",
+      "all commands",
+      "what features",
+      "capabilities",
+      "overview",
+      "what is this tool",
+      "what can this do"
+    ],
+    "answer": "bee is a command-line tool for operating CloudBees CI / Jenkins. It manages auth/profiles (logins), controllers, jobs (builds), nodes (agents), and credentials (secrets). Run bee --help for the full command tree, or bee ask <topic> to search.",
+    "commands": [
+      "bee --help",
+      "bee ask <topic>",
+      "bee --ui"
+    ],
+    "related": [
+      "bee auth login",
+      "bee job list",
+      "bee node list",
+      "bee cred list"
+    ]
+  },
+  {
+    "id": "concept.login",
+    "kind": "concept",
+    "title": "how to log in",
+    "terms": [
+      "how do i log in",
+      "how do i sign in",
+      "log in",
+      "sign in",
+      "login to server",
+      "first time setup",
+      "getting started login",
+      "initial setup",
+      "how to connect",
+      "connect to server",
+      "login flow",
+      "install bee",
+      "install",
+      "download bee",
+      "setup bee"
+    ],
+    "answer": "bee is a single binary — no installation needed. Just copy dist/bee to a machine with glibc >= 2.17 and run it. After getting the binary, log in with bee auth login. It prompts for the server URL, your username, and an API token (generate the token in CloudBees under Profile -> Security -> API Token; it is not your web password). Each saved login is a profile.",
+    "commands": [
+      "bee auth login",
+      "bee auth login --url <url> --username <user> --token <token>",
+      "bee auth profiles"
+    ],
+    "related": [
+      "bee auth use <profile>",
+      "bee controller select <name>"
+    ]
+  },
+  {
+    "id": "concept.what-is-job",
+    "kind": "concept",
+    "title": "job concept explained",
+    "terms": [
+      "what is a job",
+      "what is a build",
+      "what are jobs",
+      "explain jobs",
+      "job meaning",
+      "what is a freestyle job",
+      "what is a pipeline",
+      "what is a task",
+      "build task",
+      "what does a job do"
+    ],
+    "answer": "A job is a build configuration on the controller — a freestyle shell job, a folder, or a pipeline. You create jobs, run them to produce builds, and check their status. List your jobs with bee job list. Pipelines use a Groovy script instead of individual build steps.",
+    "commands": [
+      "bee job list",
+      "bee job create freestyle <name>",
+      "bee job create pipeline <name> --script <file>",
+      "bee job run <name>"
+    ],
+    "related": [
+      "bee job get <name>",
+      "bee job status <name>"
+    ]
+  },
+  {
+    "id": "concept.what-is-node",
+    "kind": "concept",
+    "title": "what is a node",
+    "terms": [
+      "what is a node",
+      "what is an agent",
+      "what is a build machine",
+      "what are nodes",
+      "explain nodes",
+      "explain agents",
+      "node meaning",
+      "agent meaning",
+      "what does a node do",
+      "what is a worker"
+    ],
+    "answer": "A node (agent) is a machine that runs your builds. The controller schedules jobs onto connected nodes. Add a machine with bee node create, then it can pick up builds. SSH nodes auto-connect; JNLP/Inbound nodes connect back to the controller.",
+    "commands": [
+      "bee node list",
+      "bee node create <name> --remote-dir <dir>",
+      "bee node get <name>"
+    ],
+    "related": [
+      "bee node online <name>",
+      "bee node offline <name>"
+    ]
+  },
+  {
+    "id": "concept.what-is-credential",
+    "kind": "concept",
+    "title": "what is a credential",
+    "terms": [
+      "what is a credential",
+      "what is a secret",
+      "what are credentials",
+      "explain credentials",
+      "credential meaning",
+      "what is a credential id",
+      "why do i need credentials",
+      "what does a credential do"
+    ],
+    "answer": "A credential is a stored secret the controller uses to authenticate — an SSH key or username+password for agents, or a secret text/API token for jobs. Create one with bee cred create, then reference its ID (for example, an SSH node's --cred-id).",
+    "commands": [
+      "bee cred list",
+      "bee cred create",
+      "bee cred get <cred_id>"
+    ],
+    "related": [
+      "bee cred update <cred_id>",
+      "bee cred delete <cred_ids...>"
+    ]
+  },
+  {
+    "id": "concept.add-node",
+    "kind": "concept",
+    "title": "add a build machine",
+    "terms": [
+      "add a build machine",
+      "add a node",
+      "add an agent",
+      "connect a new computer",
+      "connect a machine to run builds",
+      "register an agent",
+      "set up a build machine",
+      "create a build agent",
+      "attach a machine",
+      "new build server",
+      "add a worker",
+      "hook up a computer to run jobs"
+    ],
+    "answer": "Add a build machine with bee node create. Provide --remote-dir (work directory on the agent). For SSH, also pass --host and --cred-id; omit --host for a JNLP/Inbound agent that connects back to the controller.",
+    "commands": [
+      "bee node create <name> --remote-dir <dir> --host <host> --cred-id <id>",
+      "bee node create <name> --remote-dir <dir>"
+    ],
+    "related": [
+      "bee node list",
+      "bee node get <name>"
+    ]
+  },
+  {
+    "id": "concept.email-notification",
+    "kind": "concept",
+    "title": "email notifications on builds",
+    "terms": [
+      "email notification",
+      "send email on failure",
+      "notify on build failure",
+      "email when build fails",
+      "build failure email",
+      "email alert",
+      "--email flag",
+      "email recipient",
+      "notify me when build breaks",
+      "how to set up email",
+      "configure email",
+      "email on success"
+    ],
+    "answer": "Add email recipients to a job with --email. Control when mail is sent with --email-cond (failed, success, always, or custom). Custom mode only sends when the build log matches --email-keyword or --email-regex.",
+    "commands": [
+      "bee job create freestyle <name> --email a@example.com --email-cond failed",
+      "bee job update freestyle <name> --email a@example.com --email-cond always",
+      "bee job update freestyle <name> --email-cond custom --email-keyword 'ERROR'",
+      "bee job update freestyle <name> --email '' --email-cond failed"
+    ],
+    "related": [
+      "bee job create pipeline <name> --script <file> --email a@example.com"
+    ]
+  },
+  {
+    "id": "concept.schedule",
+    "kind": "concept",
+    "title": "schedule a job with cron",
+    "terms": [
+      "schedule job",
+      "cron job",
+      "cron expression",
+      "run automatically",
+      "run on schedule",
+      "periodic build",
+      "timer trigger",
+      "run every night",
+      "run every hour",
+      "scheduled build",
+      "--schedule flag",
+      "H syntax cron",
+      "how to schedule",
+      "automatic build",
+      "recurring build"
+    ],
+    "answer": "Pass a cron expression to --schedule to run a job on a timer. Jenkins cron uses H (hash) to spread load — e.g. 'H 8 * * *' means once daily around 8am. Clear a schedule with --schedule ''.",
+    "commands": [
+      "bee job create freestyle <name> --schedule 'H 8 * * *'",
+      "bee job create freestyle <name> --schedule 'H/15 * * * *'",
+      "bee job update freestyle <name> --schedule 'H 0 * * 1'",
+      "bee job update freestyle <name> --schedule ''"
+    ],
+    "related": [
+      "bee job run <name>",
+      "bee job status <name>"
+    ]
+  },
+  {
+    "id": "concept.live-log",
+    "kind": "concept",
+    "title": "stream build log live",
+    "terms": [
+      "follow log",
+      "stream log",
+      "live log",
+      "real time log",
+      "tail log",
+      "watch build output",
+      "--follow flag",
+      "log follow",
+      "stream output",
+      "see log as it runs",
+      "log while building",
+      "live output"
+    ],
+    "answer": "Add --follow (or -f) to stream the build log live as the build runs. Without --follow, the full log for the last completed build is printed at once.",
+    "commands": [
+      "bee job log <name> --follow",
+      "bee job log <name> <build_number> --follow",
+      "bee job log <name>"
+    ],
+    "related": [
+      "bee job status <name>",
+      "bee job run <name> --wait"
+    ]
+  },
+  {
+    "id": "concept.wait-for-build",
+    "kind": "concept",
+    "title": "wait for build to finish",
+    "terms": [
+      "wait for build",
+      "block until done",
+      "wait build finish",
+      "--wait flag",
+      "synchronous run",
+      "wait for job",
+      "run and wait",
+      "block on build",
+      "how to wait",
+      "run synchronously",
+      "get build result"
+    ],
+    "answer": "Pass --wait to bee job run to block until the triggered build finishes. Combine with --timeout to set a max wait time in seconds (default: 120). The exit code reflects the build result.",
+    "commands": [
+      "bee job run <name> --wait",
+      "bee job run <name> --wait --timeout 300",
+      "bee job run <name> -p KEY=value --wait"
+    ],
+    "related": [
+      "bee job status <name>",
+      "bee job log <name> --follow"
+    ]
+  },
+  {
+    "id": "concept.copy-move-job",
+    "kind": "concept",
+    "title": "copy or move a job",
+    "terms": [
+      "copy job",
+      "clone job",
+      "duplicate job",
+      "copy configuration",
+      "move job",
+      "rename job",
+      "relocate job",
+      "move to folder",
+      "copy a build",
+      "copy a pipeline",
+      "how to clone a job",
+      "how to move a job"
+    ],
+    "answer": "Copy a job (clone its configuration) with 'bee job copy'. Move a job to a different folder with 'bee job move' — use '.' as the destination to move it to the root.",
+    "commands": [
+      "bee job copy <source> <destination>",
+      "bee job move <source> <folder>",
+      "bee job move <source> ."
+    ],
+    "related": [
+      "bee job create freestyle <name>",
+      "bee job delete <names>"
+    ]
+  },
+  {
+    "id": "concept.api-token",
+    "kind": "concept",
+    "title": "generate API token",
+    "terms": [
+      "api token",
+      "generate token",
+      "create api token",
+      "where to get token",
+      "generate api key",
+      "jenkins api token",
+      "cloudbees token",
+      "how to get token",
+      "find my token",
+      "token generation",
+      "personal access token",
+      "user token",
+      "authentication token"
+    ],
+    "answer": "Generate an API token in CloudBees / Jenkins: go to your user profile (top-right corner) → Security → API Token → Add new token. Copy the token immediately — it is only shown once. Use the token (not your web password) with bee auth login --token.",
+    "commands": [
+      "bee auth login --url <url> --username <user> --token <token>"
+    ],
+    "related": [
+      "bee auth profiles",
+      "bee auth use <profile>"
+    ]
+  },
+  {
+    "id": "concept.track-untrack",
+    "kind": "concept",
+    "title": "track and untrack resources",
+    "terms": [
+      "track job",
+      "untrack job",
+      "track node",
+      "untrack node",
+      "track credential",
+      "untrack credential",
+      "mine list",
+      "add to my list",
+      "remove from my list",
+      "track existing job",
+      "what is tracking",
+      "how does tracking work",
+      "track command",
+      "tracked resources"
+    ],
+    "answer": "Tracking adds an existing server resource to your local 'Mine' list so it appears by default in bee list commands. Untrack removes it from the list without deleting it on the server.",
+    "commands": [
+      "bee job track <name>",
+      "bee job untrack <name>",
+      "bee node track <name>",
+      "bee cred track <cred_id>"
+    ],
+    "related": [
+      "bee job list",
+      "bee job list --all",
+      "bee node list --all"
+    ]
+  },
+  {
+    "id": "concept.delete-resource",
+    "kind": "concept",
+    "title": "delete jobs nodes credentials",
+    "terms": [
+      "delete job",
+      "delete node",
+      "delete credential",
+      "remove job",
+      "bulk delete",
+      "delete multiple",
+      "--yes flag",
+      "confirm delete",
+      "how to delete",
+      "permanently remove",
+      "destroy job"
+    ],
+    "answer": "Delete resources with bee job/node/cred delete. Pass multiple names to delete in bulk. Add --yes to skip the confirmation prompt. Deletion is permanent — use bee node offline instead to just pause an agent.",
+    "commands": [
+      "bee job delete <name>",
+      "bee job delete job1 job2 job3 --yes",
+      "bee node delete <name> --yes",
+      "bee cred delete <cred_id> --yes"
+    ],
+    "related": [
+      "bee node offline <name>",
+      "bee job untrack <names>"
+    ]
+  },
+  {
+    "id": "concept.recursive-list",
+    "kind": "concept",
+    "title": "list jobs in subfolders",
+    "terms": [
+      "list all jobs",
+      "show nested jobs",
+      "recursive list",
+      "--recursive flag",
+      "jobs in folders",
+      "all jobs including subfolders",
+      "list subfolders",
+      "see jobs in nested folders",
+      "deep list",
+      "list everything"
+    ],
+    "answer": "Pass --recursive to bee job list to descend into folders and show all nested jobs at every level. Combine with --all to include every job on the server (not just yours).",
+    "commands": [
+      "bee job list --recursive",
+      "bee job list --all --recursive"
+    ],
+    "related": [
+      "bee job create folder <name>",
+      "bee job move <source> <folder>"
+    ]
+  }
+]
