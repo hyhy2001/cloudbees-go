@@ -1,4 +1,5 @@
 dist/
+.go/
 .bee-build.mk
 bee.lm.json
 *.db

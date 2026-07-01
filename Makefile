@@ -2,9 +2,17 @@ VERSION := $(shell cat VERSION 2>/dev/null || echo "1.0.0")
 BINARY  := dist/bee
 MODULE  := bee
 
-GO_MIN_VERSION := 1.22
-GO_INSTALL_VERSION := 1.22.2
-GO_INSTALL_URL := https://go.dev/dl/go$(GO_INSTALL_VERSION).linux-amd64.tar.gz
+# All tools (Go, deps) live inside this directory — nothing touches system or ~/.local
+ROOT_DIR  := $(shell pwd)
+GO_DIR    := $(ROOT_DIR)/.go
+GOROOT    := $(GO_DIR)/go
+GOPATH    := $(GO_DIR)/gopath
+GOBIN     := $(GOROOT)/bin/go
+GO        := PATH="$(GOROOT)/bin:$$PATH" GOROOT="$(GOROOT)" GOPATH="$(GOPATH)" go
+
+GO_VERSION     := 1.22.2
+GO_TARBALL     := go$(GO_VERSION).linux-amd64.tar.gz
+GO_DOWNLOAD_URL := https://go.dev/dl/$(GO_TARBALL)
 
 # Build-time LM credentials — read from bee.lm.json if present
 -include .bee-build.mk
@@ -32,35 +40,39 @@ LDFLAGS := -s -w \
   -X '$(MODULE)/internal/config.BakedEmbedURL=$(LM_EMBED_URL)' \
   -X '$(MODULE)/internal/config.BakedEmbedPath=$(LM_EMBED_PATH)'
 
-.PHONY: build test install clean deps
+.PHONY: build test install clean go-install
 
-# Ensure Go is installed, download if missing
-deps:
-	@if ! command -v go >/dev/null 2>&1; then \
-		echo "Go not found — installing $(GO_INSTALL_VERSION)..."; \
-		curl -fsSL $(GO_INSTALL_URL) -o /tmp/go.tar.gz; \
-		sudo tar -C /usr/local -xzf /tmp/go.tar.gz; \
-		rm /tmp/go.tar.gz; \
-		echo "Add to PATH: export PATH=\$$PATH:/usr/local/go/bin"; \
-		export PATH=$$PATH:/usr/local/go/bin; \
+# Download and extract Go into .go/go/ inside this project directory
+go-install:
+	@if [ ! -x "$(GOBIN)" ]; then \
+		echo "Go not found — downloading $(GO_VERSION) into $(GO_DIR)..."; \
+		mkdir -p "$(GO_DIR)"; \
+		curl -fsSL "$(GO_DOWNLOAD_URL)" -o "$(GO_DIR)/$(GO_TARBALL)"; \
+		tar -C "$(GO_DIR)" -xzf "$(GO_DIR)/$(GO_TARBALL)"; \
+		rm "$(GO_DIR)/$(GO_TARBALL)"; \
+		echo "✓ Go $(GO_VERSION) installed at $(GOROOT)"; \
 	else \
-		echo "Go $$(go version | awk '{print $$3}') found."; \
+		echo "Go $$($(GOBIN) version | awk '{print $$3}') found at $(GOROOT)"; \
 	fi
-	@go mod download
 
-build: deps
+build: go-install
+	@$(GO) mod download
 	@mkdir -p dist
-	go build -ldflags="$(LDFLAGS)" -o $(BINARY) ./cmd/bee
+	$(GO) build -ldflags="$(LDFLAGS)" -o $(BINARY) ./cmd/bee
 	@echo "✓ Built $(BINARY) ($$(du -sh $(BINARY) | cut -f1))"
 
-test: deps
-	go test ./...
+test: go-install
+	$(GO) test ./...
 
+# install = just build; binary lives at dist/bee inside this directory
 install: build
-	@mkdir -p ~/.local/bin
-	cp $(BINARY) ~/.local/bin/bee
-	@echo "✓ Installed to ~/.local/bin/bee"
+	@echo "✓ Binary ready: $(ROOT_DIR)/$(BINARY)"
 
 clean:
 	rm -rf dist/
+
+# Remove Go toolchain and cached modules too
+clean-all: clean
+	rm -rf "$(GO_DIR)"
+
 
