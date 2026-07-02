@@ -212,34 +212,45 @@ func renderTabBar(tabs []string, active, width int) string {
 }
 
 func renderStatusBar(activeTab, width int) string {
+	// Global hints — always visible (right side in TS, merged here)
 	hints := []string{
-		theme.StyleKeyHint.Render("tab") + theme.StyleDim.Render(" next"),
-		theme.StyleKeyHint.Render("^F") + theme.StyleDim.Render(" search"),
-		theme.StyleKeyHint.Render("r") + theme.StyleDim.Render(" refresh"),
-		theme.StyleKeyHint.Render("q") + theme.StyleDim.Render(" quit"),
+		theme.StyleKeyHint.Render("←→/Tab") + theme.StyleDim.Render(" tab"),
+		theme.StyleKeyHint.Render("L") + theme.StyleDim.Render(" log"),
+		theme.StyleKeyHint.Render("?") + theme.StyleDim.Render(" help"),
+		theme.StyleKeyHint.Render("^Q") + theme.StyleDim.Render(" quit"),
 	}
 	switch activeTab {
-	case 0:
+	case 0: // Jobs
 		hints = append(hints,
-			theme.StyleKeyHint.Render("^X")+theme.StyleDim.Render(" delete"),
-			theme.StyleKeyHint.Render("enter")+theme.StyleDim.Render(" detail"),
+			theme.StyleKeyHint.Render("Enter")+theme.StyleDim.Render(" menu"),
+			theme.StyleKeyHint.Render("^N")+theme.StyleDim.Render(" new"),
+			theme.StyleKeyHint.Render("^D")+theme.StyleDim.Render(" delete"),
+			theme.StyleKeyHint.Render("r")+theme.StyleDim.Render(" refresh"),
 		)
-	case 1:
+	case 1: // Nodes
 		hints = append(hints,
-			theme.StyleKeyHint.Render("^O")+theme.StyleDim.Render(" toggle"),
-			theme.StyleKeyHint.Render("^X")+theme.StyleDim.Render(" delete"),
+			theme.StyleKeyHint.Render("Enter")+theme.StyleDim.Render(" menu"),
+			theme.StyleKeyHint.Render("^N")+theme.StyleDim.Render(" new"),
+			theme.StyleKeyHint.Render("^D")+theme.StyleDim.Render(" delete"),
+			theme.StyleKeyHint.Render("r")+theme.StyleDim.Render(" refresh"),
 		)
-	case 2:
+	case 2: // Credentials
 		hints = append(hints,
-			theme.StyleKeyHint.Render("^X")+theme.StyleDim.Render(" delete"),
+			theme.StyleKeyHint.Render("Enter")+theme.StyleDim.Render(" menu"),
+			theme.StyleKeyHint.Render("^N")+theme.StyleDim.Render(" new"),
+			theme.StyleKeyHint.Render("^D")+theme.StyleDim.Render(" delete"),
+			theme.StyleKeyHint.Render("r")+theme.StyleDim.Render(" refresh"),
 		)
-	case 3:
+	case 3: // Controllers
 		hints = append(hints,
-			theme.StyleKeyHint.Render("enter")+theme.StyleDim.Render(" select"),
+			theme.StyleKeyHint.Render("Enter")+theme.StyleDim.Render(" info"),
+			theme.StyleKeyHint.Render("s")+theme.StyleDim.Render(" select"),
+			theme.StyleKeyHint.Render("r")+theme.StyleDim.Render(" refresh"),
 		)
-	case 4:
+	case 4: // System
 		hints = append(hints,
 			theme.StyleKeyHint.Render("^X")+theme.StyleDim.Render(" clear cache"),
+			theme.StyleKeyHint.Render("r")+theme.StyleDim.Render(" refresh"),
 		)
 	}
 	bar := "  " + strings.Join(hints, "  ")

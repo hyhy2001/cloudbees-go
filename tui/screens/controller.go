@@ -214,6 +214,6 @@ func (s ControllerScreen) View() string {
 	}
 	sb.WriteString(s.table.View())
 	sb.WriteString("\n")
-	sb.WriteString(theme.StyleDim.Render("enter=select  r=refresh  ^F=search"))
+	sb.WriteString(theme.StyleDim.Render("Enter info  ·  s select  ·  ↑↓ move  ·  r refresh  ·  / search"))
 	return sb.String()
 }

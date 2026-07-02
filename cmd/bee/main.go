@@ -86,8 +86,17 @@ func main() {
 		Version:       version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) error {
 			if flagUI {
+				if err := tui.Run(database, dbPath, version); err != nil {
+					return fmt.Errorf("tui error: %w", err)
+				}
+				return nil
+			}
+			return cmd.Help()
+		},
+		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			if flagUI && cmd.Name() != "bee" {
 				if err := tui.Run(database, dbPath, version); err != nil {
 					fmt.Fprintf(os.Stderr, "tui error: %v\n", err)
 				}

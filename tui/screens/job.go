@@ -266,6 +266,15 @@ func (m menuOverlay) Update(msg tea.Msg) (menuOverlay, tea.Cmd) {
 		idx := m.cursor
 		m.visible = false
 		return m, func() tea.Msg { return MenuSelectMsg{Index: idx} }
+	default:
+		// 1–9 quick pick
+		if len(km.String()) == 1 && km.String() >= "1" && km.String() <= "9" {
+			idx := int(km.String()[0]-'1')
+			if idx < len(m.items) {
+				m.visible = false
+				return m, func() tea.Msg { return MenuSelectMsg{Index: idx} }
+			}
+		}
 	}
 	return m, nil
 }
@@ -278,15 +287,19 @@ func (m menuOverlay) View() string {
 	sb.WriteString(theme.StyleTitle.Render(theme.SymGear + " " + m.title))
 	sb.WriteString("\n\n")
 	for i, item := range m.items {
+		num := ""
+		if i < 9 {
+			num = fmt.Sprintf("%d ", i+1)
+		}
 		if on := i == m.cursor; on {
-			sb.WriteString(theme.StyleKeyHint.Render(theme.SymArrow + " " + item))
+			sb.WriteString(theme.StyleKeyHint.Render(theme.SymArrow + " " + num + item))
 		} else {
-			sb.WriteString(theme.StyleDim.Render("  " + item))
+			sb.WriteString(theme.StyleDim.Render("  "+num) + item)
 		}
 		sb.WriteString("\n")
 	}
 	sb.WriteString("\n")
-	sb.WriteString(theme.StyleDim.Render("↑↓ move · Enter select · Esc back"))
+	sb.WriteString(theme.StyleDim.Render("↑↓ move  ·  1–9 pick  ·  Enter run  ·  Esc back"))
 	return sb.String()
 }
 
@@ -1220,11 +1233,11 @@ func (s JobScreen) View() string {
 		return sb.String()
 	}
 	if len(s.jobs) == 0 {
-		sb.WriteString(theme.StyleDim.Render("No jobs found. Press Ctrl+n to create one."))
+		sb.WriteString(theme.StyleDim.Render("No jobs. Press Ctrl+n to create one."))
 		return sb.String()
 	}
 	sb.WriteString(s.table.View())
 	sb.WriteString("\n")
-	sb.WriteString(theme.StyleDim.Render("enter=menu  ^n=new  ^X=delete  A=agents(folder)  r=refresh  ^F=search"))
+	sb.WriteString(theme.StyleDim.Render("Enter menu  ·  ↑↓ move  ·  Ctrl+n new  ·  Ctrl+d delete  ·  A agents(FD)  ·  r refresh  ·  / search"))
 	return sb.String()
 }

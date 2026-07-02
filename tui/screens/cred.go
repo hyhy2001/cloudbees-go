@@ -205,11 +205,11 @@ func (s CredScreen) View() string {
 		return sb.String()
 	}
 	if len(s.creds) == 0 {
-		sb.WriteString(theme.StyleDim.Render("No credentials found."))
+		sb.WriteString(theme.StyleDim.Render("No credentials. Press Ctrl+n to create one."))
 		return sb.String()
 	}
 	sb.WriteString(s.table.View())
 	sb.WriteString("\n")
-	sb.WriteString(theme.StyleDim.Render("^X=delete  r=refresh  ^F=search"))
+	sb.WriteString(theme.StyleDim.Render("Enter menu  ·  ↑↓ move  ·  Ctrl+n new  ·  Ctrl+d delete  ·  r refresh  ·  / search"))
 	return sb.String()
 }

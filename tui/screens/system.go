@@ -218,6 +218,6 @@ func (s SystemScreen) View() string {
 		sb.WriteString("\n" + theme.StyleSuccess.Render(s.notice) + "\n")
 	}
 
-	sb.WriteString("\n" + theme.StyleDim.Render("^X=clear cache  r=refresh"))
+	sb.WriteString("\n" + theme.StyleDim.Render("Ctrl+x clear cache  ·  r refresh"))
 	return sb.String()
 }
