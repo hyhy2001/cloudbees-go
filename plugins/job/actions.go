@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"strings"
 
 	"bee/internal/api"
 )
@@ -136,14 +137,27 @@ func ListControlledAgents(client *api.Client, folderName string) ([]controlledAg
 // ControlledAgentGrant is the exported alias TUI code should reference.
 type ControlledAgentGrant = controlledAgentGrant
 
-// TriggerBuild runs a job (no parameters). Use nil for params.
+// TriggerBuild runs a job, using buildWithParameters when params are provided
+// or when the job itself has defined parameters (Jenkins requires this endpoint).
 func TriggerBuild(ctx context.Context, client *api.Client, name string, params map[string]string) error {
-	path := "/job/" + JobPathSegments(name) + "/build"
-	return client.PostForm(ctx, path, nil)
+	if len(params) > 0 {
+		return client.PostForm(ctx, "/job/"+JobPathSegments(name)+"/buildWithParameters", params)
+	}
+	// Try /build first; on 400 ("Nothing is submitted") the job has defined
+	// params — fall back to /buildWithParameters with an empty form.
+	err := client.PostForm(ctx, "/job/"+JobPathSegments(name)+"/build", nil)
+	if err != nil && isNothingSubmitted(err) {
+		return client.PostForm(ctx, "/job/"+JobPathSegments(name)+"/buildWithParameters", nil)
+	}
+	return err
 }
 
 // StopBuild stops a specific build number.
 func StopBuild(ctx context.Context, client *api.Client, name string, buildNum int) error {
 	path := fmt.Sprintf("/job/%s/%d/stop", JobPathSegments(name), buildNum)
 	return client.PostForm(ctx, path, nil)
+}
+
+func isNothingSubmitted(err error) bool {
+	return strings.Contains(err.Error(), "Nothing is submitted") || strings.Contains(err.Error(), "HTTP 400")
 }

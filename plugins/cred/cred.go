@@ -136,7 +136,7 @@ func xmlEscape(s string) string {
 // getCredentialXML fetches the config.xml for a credential.
 func getCredentialXML(client *api.Client, credID, username, store string) (string, error) {
 	seg := getUserSeg(username, store)
-	resp, err := client.Do(nil, "GET", seg+"/credential/"+url.PathEscape(credID)+"/config.xml", nil, "")
+	resp, err := client.Do(context.Background(), "GET", seg+"/credential/"+url.PathEscape(credID)+"/config.xml", nil, "")
 	if err != nil {
 		return "", err
 	}

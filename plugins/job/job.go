@@ -2,6 +2,7 @@
 package job
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"io"
@@ -32,7 +33,7 @@ func getProfileName(database *sql.DB) string {
 }
 
 func getText(client *api.Client, path string) (string, error) {
-	resp, err := client.Do(nil, "GET", path, nil, "")
+	resp, err := client.Do(context.Background(), "GET", path, nil, "")
 	if err != nil {
 		return "", err
 	}
@@ -405,6 +406,13 @@ func jobCreateCmd(database *sql.DB, dbPath string) *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
+			// Allow "folder/job" shorthand — split into folder + basename.
+			if fsFolder == "" {
+				if idx := strings.LastIndex(name, "/"); idx >= 0 {
+					fsFolder = name[:idx]
+					name = name[idx+1:]
+				}
+			}
 			client, err := controller.GetActiveControllerClient(database, dbPath)
 			if err != nil {
 				return err
@@ -445,6 +453,13 @@ func jobCreateCmd(database *sql.DB, dbPath string) *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
+			// Allow "folder/job" shorthand — split into folder + basename.
+			if plFolder == "" {
+				if idx := strings.LastIndex(name, "/"); idx >= 0 {
+					plFolder = name[:idx]
+					name = name[idx+1:]
+				}
+			}
 			client, err := controller.GetActiveControllerClient(database, dbPath)
 			if err != nil {
 				return err
@@ -671,7 +686,14 @@ func jobRunCmd(database *sql.DB, dbPath string) *cobra.Command {
 				}
 			}
 			if err := client.PostForm(cmd.Context(), path, formParams); err != nil {
-				return err
+				// Jobs with defined parameters require /buildWithParameters even with no values.
+				if len(params) == 0 && strings.Contains(err.Error(), "Nothing is submitted") {
+					if err2 := client.PostForm(cmd.Context(), "/job/"+JobPathSegments(name)+"/buildWithParameters", nil); err2 != nil {
+						return err2
+					}
+				} else {
+					return err
+				}
 			}
 			cli.Success(fmt.Sprintf("Triggered build for '%s'", name))
 
