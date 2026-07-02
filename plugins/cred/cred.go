@@ -2,6 +2,7 @@
 package cred
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -81,7 +82,7 @@ func listCredentials(database *sql.DB, client *api.Client, store, username strin
 	var result struct {
 		Credentials []credDTO `json:"credentials"`
 	}
-	if err := client.GetJSONCached(nil, database, seg+"/api/json?tree=credentials[id,typeName,description,scope,displayName]", "credentials.list."+store, &result); err != nil {
+	if err := client.GetJSONCached(context.Background(), database, seg+"/api/json?tree=credentials[id,typeName,description,scope,displayName]", "credentials.list."+store, &result); err != nil {
 		// 404 means plugin not installed — treat as empty
 		if strings.Contains(err.Error(), "404") {
 			return nil, nil
@@ -95,7 +96,7 @@ func listCredentials(database *sql.DB, client *api.Client, store, username strin
 func getCredential(client *api.Client, credID, username, store string) (*credDTO, error) {
 	seg := getUserSeg(username, store)
 	var c credDTO
-	if err := client.GetJSON(nil, seg+"/credential/"+url.PathEscape(credID)+"/api/json", &c); err != nil {
+	if err := client.GetJSON(context.Background(), seg+"/credential/"+url.PathEscape(credID)+"/api/json", &c); err != nil {
 		return nil, err
 	}
 	return &c, nil

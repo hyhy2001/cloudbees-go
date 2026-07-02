@@ -2,6 +2,7 @@
 package node
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -45,7 +46,7 @@ func listNodes(database *sql.DB, client *api.Client) ([]nodeDTO, error) {
 		Computer []nodeDTO `json:"computer"`
 	}
 	tree := "computer[displayName,description,offline,numExecutors,assignedLabels[name]]"
-	if err := client.GetJSONCached(nil, database, "/computer/api/json?tree="+url.QueryEscape(tree), "nodes.list", &result); err != nil {
+	if err := client.GetJSONCached(context.Background(), database, "/computer/api/json?tree="+url.QueryEscape(tree), "nodes.list", &result); err != nil {
 		return nil, err
 	}
 	return result.Computer, nil
@@ -56,7 +57,7 @@ func getNodeOffline(client *api.Client, name string) (bool, error) {
 	var result struct {
 		Offline bool `json:"offline"`
 	}
-	if err := client.GetJSON(nil, "/computer/"+nodeSeg(name)+"/api/json?tree=offline", &result); err != nil {
+	if err := client.GetJSON(context.Background(), "/computer/"+nodeSeg(name)+"/api/json?tree=offline", &result); err != nil {
 		return false, err
 	}
 	return result.Offline, nil
