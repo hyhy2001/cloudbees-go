@@ -2,6 +2,7 @@
 package tui
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"strings"
@@ -9,19 +10,45 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"bee/plugins/controller"
 	"bee/tui/screens"
 	"bee/tui/theme"
 )
 
-// Tab names.
-var tabNames = []string{"Jobs", "Nodes", "Credentials", "Controllers", "Info"}
+// serverTypeMsg is fired on startup to tell the app whether the active server
+// is an Operations Center (has Controllers) or a plain Jenkins/Managed Controller.
+type serverTypeMsg struct{ isOC bool }
+
+func detectServerType(db *sql.DB, dbPath string) tea.Cmd {
+	return func() tea.Msg {
+		client, err := controller.GetActiveControllerClient(db, dbPath)
+		if err != nil {
+			return serverTypeMsg{isOC: false}
+		}
+		var result struct {
+			Class string `json:"_class"`
+		}
+		if err := client.GetJSON(context.Background(), "/api/json?tree=_class", &result); err != nil {
+			return serverTypeMsg{isOC: false}
+		}
+		// Operations Center classes contain "opscenter" or "cjoc" (case-insensitive)
+		lower := strings.ToLower(result.Class)
+		isOC := strings.Contains(lower, "opscenter") || strings.Contains(lower, "cjoc")
+		return serverTypeMsg{isOC: isOC}
+	}
+}
+
+// Tab names — Controllers tab is always in the list but hidden on plain Jenkins.
+var allTabNames = []string{"Jobs", "Nodes", "Credentials", "Controllers", "Info"}
+const controllerTabIndex = 3
 
 // App is the root TUI model.
 type App struct {
 	db         *sql.DB
 	dbPath     string
-	tabs       []string
-	activeTab  int
+	tabs       []string   // visible tab names (may exclude Controllers)
+	tabMap     []int      // tabMap[visible index] = allTabNames index
+	activeTab  int        // index into tabs (visible)
 	jobScreen  screens.JobScreen
 	nodeScreen screens.NodeScreen
 	credScreen screens.CredScreen
@@ -30,14 +57,14 @@ type App struct {
 	width      int
 	height     int
 	quitting   bool
+	isOC       bool // true = server is Operations Center, show Controllers tab
 }
 
 // NewApp creates and initializes the TUI application.
 func NewApp(db *sql.DB, dbPath, version string) App {
-	return App{
+	a := App{
 		db:         db,
 		dbPath:     dbPath,
-		tabs:       tabNames,
 		activeTab:  0,
 		jobScreen:  screens.NewJobScreen(db, dbPath),
 		nodeScreen: screens.NewNodeScreen(db, dbPath),
@@ -45,11 +72,36 @@ func NewApp(db *sql.DB, dbPath, version string) App {
 		ctrlScreen: screens.NewControllerScreen(db, dbPath, ""),
 		sysScreen:  screens.NewSystemScreen(db, dbPath, version),
 	}
+	a.rebuildTabs(false)
+	return a
+}
+
+// rebuildTabs rebuilds the visible tab list based on isOC.
+func (a *App) rebuildTabs(isOC bool) {
+	a.isOC = isOC
+	a.tabs = nil
+	a.tabMap = nil
+	for i, name := range allTabNames {
+		if i == controllerTabIndex && !isOC {
+			continue
+		}
+		a.tabs = append(a.tabs, name)
+		a.tabMap = append(a.tabMap, i)
+	}
+}
+
+// allTabIndex returns the allTabNames index for the current activeTab.
+func (a App) allTabIndex() int {
+	if a.activeTab >= 0 && a.activeTab < len(a.tabMap) {
+		return a.tabMap[a.activeTab]
+	}
+	return 0
 }
 
 // Init fires all screen init commands in parallel.
 func (a App) Init() tea.Cmd {
 	return tea.Batch(
+		detectServerType(a.db, a.dbPath),
 		a.jobScreen.Init(),
 		a.nodeScreen.Init(),
 		a.credScreen.Init(),
@@ -61,6 +113,16 @@ func (a App) Init() tea.Cmd {
 // Update routes messages to the active screen and handles global keys.
 func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case serverTypeMsg:
+		prevIsOC := a.isOC
+		a.rebuildTabs(msg.isOC)
+		// Clamp activeTab if tab count shrank.
+		if a.activeTab >= len(a.tabs) {
+			a.activeTab = len(a.tabs) - 1
+		}
+		_ = prevIsOC
+		return a, nil
+
 	case tea.WindowSizeMsg:
 		a.width = msg.Width
 		a.height = msg.Height
@@ -82,21 +144,13 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "shift+tab", "left":
 			a.activeTab = (a.activeTab - 1 + len(a.tabs)) % len(a.tabs)
 			return a, nil
-		case "1":
-			a.activeTab = 0
-			return a, nil
-		case "2":
-			a.activeTab = 1
-			return a, nil
-		case "3":
-			a.activeTab = 2
-			return a, nil
-		case "4":
-			a.activeTab = 3
-			return a, nil
-		case "5":
-			a.activeTab = 4
-			return a, nil
+		}
+		// Numeric shortcuts: 1–5 map to visible tab indices.
+		for i := range a.tabs {
+			if msg.String() == fmt.Sprintf("%d", i+1) {
+				a.activeTab = i
+				return a, nil
+			}
 		}
 		return a.delegateKey(msg)
 	}
@@ -121,7 +175,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (a App) delegateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
-	switch a.activeTab {
+	switch a.allTabIndex() {
 	case 0:
 		a.jobScreen, cmd = a.jobScreen.Update(msg)
 	case 1:
@@ -170,13 +224,13 @@ func (a App) View() string {
 	sb.WriteString("\n")
 
 	// Status bar.
-	sb.WriteString(renderStatusBar(a.activeTab, a.width))
+	sb.WriteString(renderStatusBar(a.allTabIndex(), a.width))
 
 	return sb.String()
 }
 
 func (a App) activeScreenView() string {
-	switch a.activeTab {
+	switch a.allTabIndex() {
 	case 0:
 		return a.jobScreen.View()
 	case 1:
