@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"regexp"
 	"strings"
 
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 
 	"bee/internal/api"
+	"bee/internal/cache"
 	"bee/internal/cli"
 	"bee/internal/db"
 	"bee/internal/session"
@@ -57,13 +59,29 @@ func warnUserStore(store, username string) {
 	}
 }
 
+// validateStore enforces the only two credential stores Jenkins exposes here.
+func validateStore(store string) error {
+	if store != "system" && store != "user" {
+		return fmt.Errorf("invalid store '%s'. Choose from: system, user", store)
+	}
+	return nil
+}
+
+// validateScope enforces the only two credential scopes Jenkins exposes here.
+func validateScope(scope string) error {
+	if scope != "GLOBAL" && scope != "SYSTEM" {
+		return fmt.Errorf("invalid scope '%s'. Choose from: GLOBAL, SYSTEM", scope)
+	}
+	return nil
+}
+
 // listCredentials fetches credentials from the store.
-func listCredentials(ctx interface{ Done() <-chan struct{} }, client *api.Client, store, username string) ([]credDTO, error) {
+func listCredentials(database *sql.DB, client *api.Client, store, username string) ([]credDTO, error) {
 	seg := getUserSeg(username, store)
 	var result struct {
 		Credentials []credDTO `json:"credentials"`
 	}
-	if err := client.GetJSON(nil, seg+"/api/json?tree=credentials[id,typeName,description,scope,displayName]", &result); err != nil {
+	if err := client.GetJSONCached(nil, database, seg+"/api/json?tree=credentials[id,typeName,description,scope,displayName]", "credentials.list."+store, &result); err != nil {
 		// 404 means plugin not installed — treat as empty
 		if strings.Contains(err.Error(), "404") {
 			return nil, nil
@@ -85,7 +103,8 @@ func getCredential(client *api.Client, credID, username, store string) (*credDTO
 
 // buildUsernamePasswordXML builds the XML for a username+password credential.
 func buildUsernamePasswordXML(id, username, password, desc, scope string) string {
-	return `<com.cloudbees.plugins.credentials.impl.UsernamePasswordCredentialsImpl>` +
+	return `<?xml version='1.1' encoding='UTF-8'?>` + "\n" +
+		`<com.cloudbees.plugins.credentials.impl.UsernamePasswordCredentialsImpl>` +
 		`<scope>` + scope + `</scope>` +
 		`<id>` + xmlEscape(id) + `</id>` +
 		`<description>` + xmlEscape(desc) + `</description>` +
@@ -96,7 +115,8 @@ func buildUsernamePasswordXML(id, username, password, desc, scope string) string
 
 // buildSecretTextXML builds the XML for a secret-text credential.
 func buildSecretTextXML(id, secret, desc, scope string) string {
-	return `<org.jenkinsci.plugins.plaincredentials.impl.StringCredentialsImpl>` +
+	return `<?xml version='1.1' encoding='UTF-8'?>` + "\n" +
+		`<org.jenkinsci.plugins.plaincredentials.impl.StringCredentialsImpl>` +
 		`<scope>` + scope + `</scope>` +
 		`<id>` + xmlEscape(id) + `</id>` +
 		`<description>` + xmlEscape(desc) + `</description>` +
@@ -128,21 +148,24 @@ func getCredentialXML(client *api.Client, credID, username, store string) (strin
 	return string(b), err
 }
 
-// setXMLElement replaces or inserts a simple XML element value.
+var rootCloseAnchorRe = regexp.MustCompile(`(\n?)(</[A-Za-z][\w.-]*>\s*)$`)
+
+// setXMLElement replaces or inserts a simple XML element value, tolerating
+// attributes on the opening tag (e.g. <secret plugin="...">) unlike a plain
+// strings.Index on "<tag>".
 func setXMLElement(xmlStr, tag, value string) string {
 	escaped := xmlEscape(value)
-	// Match <tag>...</tag> (greedy-safe, handles class attributes)
-	open := `<` + tag + `>`
-	close := `</` + tag + `>`
-	if i := strings.Index(xmlStr, open); i >= 0 {
-		j := strings.Index(xmlStr[i:], close)
-		if j >= 0 {
-			return xmlStr[:i+len(open)] + escaped + xmlStr[i+j:]
-		}
+	openRe := regexp.MustCompile(`(<` + regexp.QuoteMeta(tag) + `(?:\s[^>]*)?>)([\s\S]*?)(</` + regexp.QuoteMeta(tag) + `>)`)
+	if loc := openRe.FindStringSubmatchIndex(xmlStr); loc != nil {
+		open := xmlStr[loc[2]:loc[3]]
+		closeTag := xmlStr[loc[6]:loc[7]]
+		return xmlStr[:loc[0]] + open + escaped + closeTag + xmlStr[loc[1]:]
 	}
-	// Insert before root closing tag
-	if k := strings.LastIndex(xmlStr, "</"); k >= 0 {
-		return xmlStr[:k] + "\n  <" + tag + ">" + escaped + "</" + tag + ">" + xmlStr[k:]
+	// Insert before the last closing tag (the document root), not just any "</".
+	if m := rootCloseAnchorRe.FindStringSubmatchIndex(xmlStr); m != nil {
+		rootClose := xmlStr[m[4]:m[5]]
+		insert := "\n  <" + tag + ">" + escaped + "</" + tag + ">" + rootClose
+		return xmlStr[:m[4]] + insert
 	}
 	return xmlStr
 }
@@ -167,18 +190,21 @@ func Register(root *cobra.Command, database *sql.DB, dbPath string) {
 
 func credListCmd(database *sql.DB, dbPath string) *cobra.Command {
 	var flagAll bool
-	var flagStore string
+	var flagStore, flagOutput string
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List stored credentials from the selected store",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateStore(flagStore); err != nil {
+				return err
+			}
 			username := getUsername(database, dbPath)
 			warnUserStore(flagStore, username)
 			client, err := controller.GetActiveControllerClient(database, dbPath)
 			if err != nil {
 				return err
 			}
-			allCreds, err := listCredentials(cmd.Context(), client, flagStore, username)
+			allCreds, err := listCredentials(database, client, flagStore, username)
 			if err != nil {
 				return err
 			}
@@ -214,6 +240,15 @@ func credListCmd(database *sql.DB, dbPath string) *cobra.Command {
 				}
 			}
 
+			if flagOutput == "json" {
+				b, err := json.MarshalIndent(creds, "", "  ")
+				if err != nil {
+					return err
+				}
+				fmt.Println(string(b))
+				return nil
+			}
+
 			rows := make([][]string, len(creds))
 			for i, c := range creds {
 				typeName := c.TypeName
@@ -233,6 +268,7 @@ func credListCmd(database *sql.DB, dbPath string) *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&flagAll, "all", false, "Show all credentials (default: only yours)")
 	cmd.Flags().StringVar(&flagStore, "store", "system", "Credential store: system or user")
+	cmd.Flags().StringVar(&flagOutput, "output", "", "Output format: table (default) or json")
 	return cmd
 }
 
@@ -243,6 +279,9 @@ func credGetCmd(database *sql.DB, dbPath string) *cobra.Command {
 		Short: "View a credential's details (secret values are masked)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateStore(flagStore); err != nil {
+				return err
+			}
 			username := getUsername(database, dbPath)
 			warnUserStore(flagStore, username)
 			client, err := controller.GetActiveControllerClient(database, dbPath)
@@ -275,6 +314,12 @@ func credCreateCmd(database *sql.DB, dbPath string) *cobra.Command {
 		Use:   "create",
 		Short: "Create a new credential (Username+Password, SecretText, or SSH key)",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateStore(flagStore); err != nil {
+				return err
+			}
+			if err := validateScope(flagScope); err != nil {
+				return err
+			}
 			username := getUsername(database, dbPath)
 			warnUserStore(flagStore, username)
 
@@ -290,6 +335,10 @@ func credCreateCmd(database *sql.DB, dbPath string) *cobra.Command {
 			client, err := controller.GetActiveControllerClient(database, dbPath)
 			if err != nil {
 				return err
+			}
+
+			if _, err := getCredential(client, credID, username, flagStore); err == nil {
+				return fmt.Errorf("credential %q already exists", credID)
 			}
 
 			seg := getUserSeg(username, flagStore)
@@ -314,6 +363,7 @@ func credCreateCmd(database *sql.DB, dbPath string) *cobra.Command {
 			if err := client.PostXML(cmd.Context(), seg+"/createCredentials", xmlBody); err != nil {
 				return err
 			}
+			_ = cache.InvalidateResource(database, "credential")
 
 			profile := getProfileName(database)
 			ctrlKey := client.BaseURL + "." + flagStore
@@ -348,6 +398,9 @@ func credDeleteCmd(database *sql.DB, dbPath string) *cobra.Command {
 		Short: "Delete one or more credentials permanently",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateStore(flagStore); err != nil {
+				return err
+			}
 			username := getUsername(database, dbPath)
 			warnUserStore(flagStore, username)
 
@@ -381,6 +434,7 @@ func credDeleteCmd(database *sql.DB, dbPath string) *cobra.Command {
 				_ = db.UntrackResource(database, "credential", credID, profile, ctrlKey)
 				cli.Success(fmt.Sprintf("Credential '%s' deleted from %s store.", credID, flagStore))
 			}
+			_ = cache.InvalidateResource(database, "credential")
 			return nil
 		},
 	}
@@ -396,6 +450,9 @@ func credUpdateCmd(database *sql.DB, dbPath string) *cobra.Command {
 		Short: "Update an existing credential (rotate password, API token, secret, or description)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateStore(flagStore); err != nil {
+				return err
+			}
 			username := getUsername(database, dbPath)
 			warnUserStore(flagStore, username)
 
@@ -431,6 +488,7 @@ func credUpdateCmd(database *sql.DB, dbPath string) *cobra.Command {
 			if err := client.PostXML(cmd.Context(), seg+"/credential/"+url.PathEscape(credID)+"/config.xml", xmlStr); err != nil {
 				return err
 			}
+			_ = cache.InvalidateResource(database, "credential")
 			cli.Success(fmt.Sprintf("Credential '%s' updated.", credID))
 			return nil
 		},
@@ -450,6 +508,9 @@ func credTrackCmd(database *sql.DB, dbPath string) *cobra.Command {
 		Short: "Track existing server credentials — add them to your Mine",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateStore(flagStore); err != nil {
+				return err
+			}
 			username := getUsername(database, dbPath)
 			warnUserStore(flagStore, username)
 			client, err := controller.GetActiveControllerClient(database, dbPath)
@@ -495,6 +556,9 @@ func credUntrackCmd(database *sql.DB, dbPath string) *cobra.Command {
 		Short: "Stop tracking credentials — remove from your Mine (does not delete from server)",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateStore(flagStore); err != nil {
+				return err
+			}
 			client, err := controller.GetActiveControllerClient(database, dbPath)
 			if err != nil {
 				return err
@@ -522,6 +586,3 @@ func credUntrackCmd(database *sql.DB, dbPath string) *cobra.Command {
 	cmd.Flags().StringVar(&flagStore, "store", "system", "Credential store: system or user")
 	return cmd
 }
-
-// ensure json import used
-var _ = json.Marshal

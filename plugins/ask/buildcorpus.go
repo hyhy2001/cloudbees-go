@@ -87,5 +87,18 @@ func BuildCorpus(root *cobra.Command) []DocItem {
 		})
 	}
 
+	if includeDocChunks() {
+		for _, chunk := range buildDocChunks() {
+			items = append(items, DocItem{
+				ID:          chunk.ID,
+				Type:        "doc",
+				Title:       chunk.Heading,
+				Description: chunk.Source,
+				Body:        chunk.Body,
+				Source:      chunk.Source,
+			})
+		}
+	}
+
 	return items
 }

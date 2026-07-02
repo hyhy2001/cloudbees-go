@@ -217,11 +217,23 @@ func Answer(query string, corpus []DocItem, provider LMProvider, limit int) (*An
 		searchQuery, rewriteUsage = rewriteQuery(query, provider)
 	}
 
-	contextHits := directHits
+	fusedBase := directHits
+	runtimeModel := embedModel()
+	modelsMatch := runtimeModel == "" || runtimeModel == "default" || runtimeModel == CORPUS_MODEL
+	bm25TopIsCommand := directHits[0].Type == "command"
+	if modelsMatch && bm25TopIsCommand {
+		if vdb := getVectorDb(); len(vdb.Matrix) > 0 {
+			if queryEmb, err := embedQuery(searchQuery); err == nil && len(queryEmb) == len(vdb.Matrix[0]) {
+				vectorHits := searchVector(queryEmb, vdb, corpus, limit*3)
+				fusedBase = rrfFusion(directHits, vectorHits, 60)
+			}
+		}
+	}
+
+	contextHits := fusedBase
 	if len(contextHits) > limit {
 		contextHits = contextHits[:limit]
 	}
-	_ = searchQuery
 
 	prompt := BuildUserPrompt(query, contextHits)
 

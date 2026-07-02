@@ -49,11 +49,11 @@ func newClient(database *sql.DB, dbPath string) (*api.Client, error) {
 	return api.New(s.Profile.ServerURL, s.BasicToken), nil
 }
 
-func listControllers(ctx context.Context, client *api.Client) ([]controllerDTO, error) {
+func listControllers(ctx context.Context, database *sql.DB, client *api.Client) ([]controllerDTO, error) {
 	var result struct {
 		Jobs []controllerDTO `json:"jobs"`
 	}
-	if err := client.GetJSON(ctx, "/api/json?tree=jobs[_class,name,url,description,offline]", &result); err != nil {
+	if err := client.GetJSONCached(ctx, database, "/api/json?tree=jobs[_class,name,url,description,offline]", "controllers.list", &result); err != nil {
 		return nil, err
 	}
 	var controllers []controllerDTO
@@ -80,7 +80,7 @@ func listCmd(database *sql.DB, dbPath string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			controllers, err := listControllers(cmd.Context(), client)
+			controllers, err := listControllers(cmd.Context(), database, client)
 			if err != nil {
 				return err
 			}
@@ -125,7 +125,7 @@ func infoCmd(database *sql.DB, dbPath string) *cobra.Command {
 				Description string `json:"description"`
 				Offline     bool   `json:"offline"`
 			}
-			if err := client.GetJSON(cmd.Context(), "/job/"+args[0]+"/api/json", &detail); err != nil {
+			if err := client.GetJSONCached(cmd.Context(), database, "/job/"+args[0]+"/api/json", "controllers.detail."+args[0], &detail); err != nil {
 				return err
 			}
 			typeLabel := detail.Class
@@ -140,13 +140,21 @@ func infoCmd(database *sql.DB, dbPath string) *cobra.Command {
 			if detail.Offline {
 				status = "OFFLINE"
 			}
-			cli.KV([][]string{
+			pairs := [][]string{
 				{"Name", detail.Name},
 				{"URL", detail.URL},
 				{"Type", typeLabel},
 				{"Status", status},
 				{"Description", detail.Description},
-			})
+			}
+			if caps, err := GetControllerCapabilities(cmd.Context(), database, client, args[0], detail.URL); err == nil {
+				pairs = append(pairs,
+					[]string{"Can Create Job", fmt.Sprintf("%v", caps.CanCreateJob)},
+					[]string{"Can Create Node", fmt.Sprintf("%v", caps.CanCreateNode)},
+					[]string{"Can Create Cred", fmt.Sprintf("%v", caps.CanCreateCred)},
+				)
+			}
+			cli.KV(pairs)
 			return nil
 		},
 	}
@@ -163,7 +171,7 @@ func selectCmd(database *sql.DB, dbPath string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			controllers, err := listControllers(cmd.Context(), client)
+			controllers, err := listControllers(cmd.Context(), database, client)
 			if err != nil {
 				return err
 			}

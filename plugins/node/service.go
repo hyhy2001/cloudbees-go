@@ -85,6 +85,45 @@ func GetNodeConfigXML(ctx context.Context, client *api.Client, name string) (str
 
 // ── Folders Plus controlled-agent handshake ───────────────────────────────────
 
+const controlledAgentPropTag = "com.cloudbees.jenkins.plugins.foldersplus.SecurityTokensNodeProperty"
+
+// setControlledAgentXML enables or disables the Folders Plus controlled-agent
+// node property in a raw node config.xml string.
+func setControlledAgentXML(xmlStr string, enable bool) string {
+	propBlock := "  <" + controlledAgentPropTag + ">\n    <acceptTasksWithoutOwningItem>false</acceptTasksWithoutOwningItem>\n  </" + controlledAgentPropTag + ">"
+	hasProp := strings.Contains(xmlStr, controlledAgentPropTag)
+	if enable && !hasProp {
+		if strings.Contains(xmlStr, "<nodeProperties>") {
+			return strings.Replace(xmlStr, "<nodeProperties>", "<nodeProperties>\n"+propBlock, 1)
+		}
+		for _, rootClose := range []string{"</slave>", "</agent>", "</hudson.slaves.DumbSlave>"} {
+			if k := strings.LastIndex(xmlStr, rootClose); k >= 0 {
+				return xmlStr[:k] + "  <nodeProperties>\n" + propBlock + "\n  </nodeProperties>\n" + xmlStr[k:]
+			}
+		}
+		return xmlStr
+	}
+	if !enable && hasProp {
+		return swapXMLSubtree(xmlStr, controlledAgentPropTag, "")
+	}
+	return xmlStr
+}
+
+// SetControlledAgent enables (or disables) Folders Plus controlled-agent mode
+// on a node — step 0 of the handshake, run automatically before requesting a
+// folder grant so the agent side is ready to receive tokens.
+func SetControlledAgent(ctx context.Context, client *api.Client, nodeName string, enable bool) error {
+	xmlStr, err := GetNodeConfigXML(ctx, client, nodeName)
+	if err != nil {
+		return err
+	}
+	updated := setControlledAgentXML(xmlStr, enable)
+	if updated == xmlStr {
+		return nil
+	}
+	return client.PostXML(ctx, "/computer/"+nodeSeg(nodeName)+"/config.xml", updated)
+}
+
 // CreateFolderRequest creates a controlled-agent request on the folder side.
 // Returns the grantId (Request Key) to hand to the agent admin.
 // Step 1 of the 5-step handshake.
@@ -178,6 +217,10 @@ func ApproveFolder(ctx context.Context, client *api.Client, nodeName, folderName
 	var grantID, tokenID string
 	var err error
 
+	if err = SetControlledAgent(ctx, client, nodeName, true); err != nil {
+		return fmt.Errorf("step 0 (enable controlled-agent): %w", err)
+	}
+
 	// Step 1+2 could run in parallel but we keep sequential for simplicity and
 	// easier rollback tracking.
 	if grantID, err = CreateFolderRequest(ctx, client, folderName); err != nil {
@@ -201,6 +244,61 @@ func ApproveFolder(ctx context.Context, client *api.Client, nodeName, folderName
 	return nil
 }
 
+// ApprovedFolder is one row from a node's security-tokens grant list.
+type ApprovedFolder struct {
+	TokenID    string
+	FolderName string
+}
+
+// ListApprovedFolders parses the HTML grant table at
+// /computer/<name>/security-tokens/ into (tokenId, folderName) pairs.
+func ListApprovedFolders(ctx context.Context, client *api.Client, nodeName string) ([]ApprovedFolder, error) {
+	html, err := client.GetHTML(ctx, "/computer/"+nodeSeg(nodeName)+"/security-tokens/")
+	if err != nil {
+		return nil, err
+	}
+	var out []ApprovedFolder
+	for _, row := range strings.Split(html, "<tr") {
+		tm := approvedTokenIDRe.FindStringSubmatch(row)
+		fm := approvedFolderRe.FindStringSubmatch(row)
+		if tm == nil || fm == nil {
+			continue
+		}
+		folder, err := url.QueryUnescape(strings.ReplaceAll(fm[1], "/job/", "/"))
+		if err != nil {
+			folder = strings.ReplaceAll(fm[1], "/job/", "/")
+		}
+		out = append(out, ApprovedFolder{TokenID: tm[1], FolderName: strings.Trim(folder, "/")})
+	}
+	return out, nil
+}
+
+// CheckNodeApprovalForJob warns when a controlled-agent node has no approval
+// covering jobPath. Returns "" when the node isn't controlled or the job is
+// approved; otherwise a human-readable warning.
+func CheckNodeApprovalForJob(ctx context.Context, client *api.Client, nodeName, jobPath string) (string, error) {
+	xmlStr, err := GetNodeConfigXML(ctx, client, nodeName)
+	if err != nil {
+		return "", err
+	}
+	if !strings.Contains(xmlStr, controlledAgentPropTag) {
+		return "", nil
+	}
+	folders, err := ListApprovedFolders(ctx, client, nodeName)
+	if err != nil {
+		return "", err
+	}
+	if len(folders) == 0 {
+		return fmt.Sprintf("node %q is controlled but has no approved folders", nodeName), nil
+	}
+	for _, f := range folders {
+		if f.FolderName != "" && strings.HasPrefix(jobPath, f.FolderName) {
+			return "", nil
+		}
+	}
+	return fmt.Sprintf("node %q is controlled but job %q is not in any approved folder", nodeName, jobPath), nil
+}
+
 // folderPathSegments converts "folder/sub" → "folder/job/sub" for Jenkins REST.
 func folderPathSegments(name string) string {
 	parts := strings.Split(name, "/")
@@ -217,4 +315,7 @@ var (
 	tokenIDRe = regexp.MustCompile(`tokensById/([^/"'\s?#]+)`)
 	hashRe    = regexp.MustCompile(`name=["']_\.hash["'][^>]*value=["']([0-9a-fA-F]+)["']`)
 	hashRe2   = regexp.MustCompile(`value=["']([0-9a-fA-F]{32,})["'][^>]*name=["']_\.hash["']`)
+
+	approvedTokenIDRe = regexp.MustCompile(`tokensById/([^/"'\s?#]+)/delete`)
+	approvedFolderRe  = regexp.MustCompile(`href="[^"]*/job/([^"?#]+)/"[^>]*>`)
 )

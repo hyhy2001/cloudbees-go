@@ -1,6 +1,6 @@
 dist/
 .go/
-.bee-build.mk
-bee.lm.json
+bee.csh
+bee.yaml
 *.db
 .bee_secret

@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"slices"
 
 	"github.com/spf13/cobra"
 
@@ -18,8 +20,54 @@ import (
 
 var version = "1.0.0"
 
+// runInstall creates a bee.csh wrapper next to the running binary and
+// symlinks it to ~/.local/bin/bee — works even if the binary was copied
+// somewhere else, since it resolves its own path via os.Executable().
+func runInstall() error {
+	binaryPath, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	wrapperPath := filepath.Join(filepath.Dir(binaryPath), "bee.csh")
+	wrapperContent := fmt.Sprintf("#!/usr/bin/env csh\nexec \"%s\" $*\n", binaryPath)
+	if err := os.WriteFile(wrapperPath, []byte(wrapperContent), 0o755); err != nil {
+		return err
+	}
+	fmt.Printf("  [OK] wrapper: %s\n", wrapperPath)
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	installDir := filepath.Join(home, ".local", "bin")
+	if err := os.MkdirAll(installDir, 0o755); err != nil {
+		return err
+	}
+	linkTarget := filepath.Join(installDir, "bee")
+	if _, err := os.Lstat(linkTarget); err == nil {
+		if err := os.Remove(linkTarget); err != nil {
+			return err
+		}
+	}
+	if err := os.Symlink(wrapperPath, linkTarget); err != nil {
+		return err
+	}
+	fmt.Printf("  [OK] symlink: %s -> %s\n", linkTarget, wrapperPath)
+	fmt.Println("\nAdd ~/.local/bin to your PATH if not already present.")
+	return nil
+}
+
 func main() {
-	dbPath := os.Getenv("BEE_DB_PATH")
+	// --install: self-install without needing source or make.
+	if slices.Contains(os.Args[1:], "--install") {
+		if err := runInstall(); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	dbPath := os.Getenv("CB_DB_PATH")
 	if dbPath == "" {
 		dbPath = db.DefaultPath()
 	}
@@ -40,7 +88,7 @@ func main() {
 		SilenceErrors: true,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 			if flagUI {
-				if err := tui.Run(database, dbPath); err != nil {
+				if err := tui.Run(database, dbPath, version); err != nil {
 					fmt.Fprintf(os.Stderr, "tui error: %v\n", err)
 				}
 				os.Exit(0)
@@ -50,6 +98,7 @@ func main() {
 	}
 
 	root.PersistentFlags().BoolVarP(&flagUI, "ui", "u", false, "Launch interactive TUI")
+	root.PersistentFlags().Bool("install", false, "Install bee: create wrapper + symlink to ~/.local/bin/bee")
 
 	// Register plugins
 	auth.Register(root, database, dbPath)

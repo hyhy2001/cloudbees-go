@@ -8,12 +8,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"os/user"
 	"strings"
 	"time"
-
 )
-
-
 
 // OpenAIProvider calls any OpenAI-compatible chat completions endpoint.
 type OpenAIProvider struct {
@@ -27,24 +26,18 @@ func NewOpenAI(endpoint, apiKey, model string) *OpenAIProvider {
 	return &OpenAIProvider{endpoint: endpoint, apiKey: apiKey, model: model}
 }
 
+// Name derives a display label from the endpoint host.
 func (p *OpenAIProvider) Name() string {
-	try := func() string {
-		// derive label from endpoint host
-		parts := strings.Split(p.endpoint, "/")
-		for _, part := range parts {
-			if strings.Contains(part, ".") {
-				if strings.Contains(part, "localhost") || part == "127.0.0.1" {
-					return "local-lm"
-				}
-				if strings.Contains(part, "databricks") {
-					return "databricks"
-				}
-				return part
+	parts := strings.Split(p.endpoint, "/")
+	for _, part := range parts {
+		if strings.Contains(part, ".") {
+			if strings.Contains(part, "localhost") || part == "127.0.0.1" {
+				return "local-lm"
 			}
+			return part
 		}
-		return "lm"
 	}
-	return try()
+	return "lm"
 }
 
 func (p *OpenAIProvider) headers() http.Header {
@@ -53,7 +46,23 @@ func (p *OpenAIProvider) headers() http.Header {
 	if p.apiKey != "" {
 		h.Set("Authorization", "Bearer "+p.apiKey)
 	}
+	if u := localUsername(); u != "" {
+		h.Set("X-Bee-User", u)
+	}
 	return h
+}
+
+// localUsername identifies the caller for llm-gateway's per-user usage
+// tracking. Falls back through $USER before os/user, since os/user can fail
+// in minimal/container environments without nsswitch entries.
+func localUsername() string {
+	if u := os.Getenv("USER"); u != "" {
+		return u
+	}
+	if cu, err := user.Current(); err == nil {
+		return cu.Username
+	}
+	return ""
 }
 
 type chatMsg struct {
@@ -62,13 +71,13 @@ type chatMsg struct {
 }
 
 type chatReq struct {
-	Model         string    `json:"model"`
-	Messages      []chatMsg `json:"messages"`
-	Temperature   float64   `json:"temperature"`
-	MaxTokens     int       `json:"max_tokens"`
-	EnableThinking bool     `json:"enable_thinking"`
-	Stream        bool      `json:"stream,omitempty"`
-	ResponseFormat *rfmt    `json:"response_format,omitempty"`
+	Model          string    `json:"model"`
+	Messages       []chatMsg `json:"messages"`
+	Temperature    float64   `json:"temperature"`
+	MaxTokens      int       `json:"max_tokens"`
+	EnableThinking bool      `json:"enable_thinking"`
+	Stream         bool      `json:"stream,omitempty"`
+	ResponseFormat *rfmt     `json:"response_format,omitempty"`
 }
 
 type rfmt struct {
@@ -130,8 +139,8 @@ func msgContent(cr *chatResp) string {
 
 func (p *OpenAIProvider) Generate(prompt string, maxTokens int) (string, error) {
 	cr, err := p.do(chatReq{
-		Model:    p.model,
-		Messages: []chatMsg{{Role: "system", Content: SYSTEM_PROMPT}, {Role: "user", Content: prompt}},
+		Model:       p.model,
+		Messages:    []chatMsg{{Role: "system", Content: SYSTEM_PROMPT}, {Role: "user", Content: prompt}},
 		Temperature: 0, MaxTokens: maxTokens,
 	})
 	if err != nil {
@@ -142,8 +151,8 @@ func (p *OpenAIProvider) Generate(prompt string, maxTokens int) (string, error) 
 
 func (p *OpenAIProvider) GenerateWithUsage(prompt string, maxTokens int) (string, TokenUsage, error) {
 	cr, err := p.do(chatReq{
-		Model:    p.model,
-		Messages: []chatMsg{{Role: "system", Content: SYSTEM_PROMPT}, {Role: "user", Content: prompt}},
+		Model:       p.model,
+		Messages:    []chatMsg{{Role: "system", Content: SYSTEM_PROMPT}, {Role: "user", Content: prompt}},
 		Temperature: 0, MaxTokens: maxTokens,
 	})
 	if err != nil {

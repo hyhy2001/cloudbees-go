@@ -3,11 +3,14 @@ package job
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"io"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 
 	"bee/internal/api"
 )
@@ -84,8 +87,9 @@ func JobType(class string) string {
 	return "?"
 }
 
-// ListJobs fetches all jobs from the active controller.
-func ListJobs(ctx context.Context, client *api.Client) ([]JobDTO, error) {
+// ListJobs fetches all jobs from the active controller. Pass a non-nil
+// database to read/populate the cache; pass nil to always hit the network.
+func ListJobs(ctx context.Context, database *sql.DB, client *api.Client) ([]JobDTO, error) {
 	tree := "jobs[_class,name,url,color,description,buildable,lastBuild[number,result,url]]"
 	var raw struct {
 		Jobs []struct {
@@ -101,7 +105,7 @@ func ListJobs(ctx context.Context, client *api.Client) ([]JobDTO, error) {
 			} `json:"lastBuild"`
 		} `json:"jobs"`
 	}
-	if err := client.GetJSON(ctx, "/api/json?tree="+url.QueryEscape(tree), &raw); err != nil {
+	if err := client.GetJSONCached(ctx, database, "/api/json?tree="+url.QueryEscape(tree), "jobs.list", &raw); err != nil {
 		return nil, err
 	}
 	out := make([]JobDTO, 0, len(raw.Jobs))
@@ -116,6 +120,88 @@ func ListJobs(ctx context.Context, client *api.Client) ([]JobDTO, error) {
 		out = append(out, dto)
 	}
 	return out, nil
+}
+
+// listJobsAt fetches jobs under a folder path ("" for root), tree-scoped.
+func listJobsAt(ctx context.Context, client *api.Client, prefix string) ([]JobDTO, error) {
+	tree := "jobs[_class,name,url,color,description,buildable,lastBuild[number,result,url]]"
+	path := "/api/json?tree=" + url.QueryEscape(tree)
+	if prefix != "" {
+		path = "/job/" + JobPathSegments(prefix) + path
+	}
+	var raw struct {
+		Jobs []struct {
+			Class       string `json:"_class"`
+			Name        string `json:"name"`
+			URL         string `json:"url"`
+			Color       string `json:"color"`
+			Description string `json:"description"`
+			Buildable   bool   `json:"buildable"`
+			LastBuild   *struct {
+				Number int    `json:"number"`
+				Result string `json:"result"`
+			} `json:"lastBuild"`
+		} `json:"jobs"`
+	}
+	if err := client.GetJSON(ctx, path, &raw); err != nil {
+		return nil, err
+	}
+	out := make([]JobDTO, 0, len(raw.Jobs))
+	for _, j := range raw.Jobs {
+		name := j.Name
+		if prefix != "" {
+			name = prefix + "/" + j.Name
+		}
+		dto := JobDTO{
+			Class: j.Class, Name: name, URL: j.URL,
+			Color: j.Color, Description: j.Description, Buildable: j.Buildable,
+		}
+		if j.LastBuild != nil {
+			dto.LastBuild = &BuildRef{Number: j.LastBuild.Number, Result: j.LastBuild.Result}
+		}
+		out = append(out, dto)
+	}
+	return out, nil
+}
+
+// ListJobsRecursive lists jobs under prefix ("" for root) and descends into
+// any folder-class items concurrently. A subfolder that fails to list is
+// skipped (contributes no jobs) rather than failing the whole call.
+func ListJobsRecursive(ctx context.Context, client *api.Client, prefix string) ([]JobDTO, error) {
+	jobs, err := listJobsAt(ctx, client, prefix)
+	if err != nil {
+		return nil, err
+	}
+
+	var folders []string
+	for _, j := range jobs {
+		if strings.Contains(strings.ToLower(j.Class), "folder") {
+			folders = append(folders, j.Name)
+		}
+	}
+	if len(folders) == 0 {
+		return jobs, nil
+	}
+
+	var wg sync.WaitGroup
+	results := make([][]JobDTO, len(folders))
+	for i, folderName := range folders {
+		wg.Add(1)
+		go func(i int, folderName string) {
+			defer wg.Done()
+			children, err := ListJobsRecursive(ctx, client, folderName)
+			if err != nil {
+				return
+			}
+			results[i] = children
+		}(i, folderName)
+	}
+	wg.Wait()
+
+	for _, children := range results {
+		jobs = append(jobs, children...)
+	}
+	return jobs, nil
 }
 
 // GetJob fetches a single job. Returns (nil, nil) on 404.
@@ -154,6 +240,95 @@ func GetJob(ctx context.Context, client *api.Client, name string) (*JobDTO, erro
 // DeleteJob sends doDelete for the named job.
 func DeleteJob(ctx context.Context, client *api.Client, name string) error {
 	return client.PostForm(ctx, "/job/"+JobPathSegments(name)+"/doDelete", nil)
+}
+
+// GetJobConfigXML fetches the raw config.xml for a job.
+func GetJobConfigXML(ctx context.Context, client *api.Client, name string) (string, error) {
+	resp, err := client.Do(ctx, "GET", "/job/"+JobPathSegments(name)+"/config.xml", nil, "")
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		b, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("GET config.xml: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+	}
+	b, err := io.ReadAll(resp.Body)
+	return string(b), err
+}
+
+// ConfigSummary is a best-effort, human-readable digest of a job's config.xml.
+// Fields default to "-" when they can't be determined; parse failures never
+// fail the calling command.
+type ConfigSummary struct {
+	Description  string
+	Node         string
+	Schedule     string
+	ShellCmd     string
+	Chdir        string
+	Email        string
+	EmailCond    string
+	EmailKeyword string
+	EmailRegex   string
+	Params       string
+}
+
+var pipelineAgentLabelRe = regexp.MustCompile(`agent\s*\{\s*label\s*['"]([^'"]+)['"]`)
+var chdirPrefixRe = regexp.MustCompile(`^cd (\S+) && `)
+
+// GetJobConfigSummary fetches and parses a job's config.xml into a
+// ConfigSummary. On any error, returns a summary of all "-" values.
+func GetJobConfigSummary(ctx context.Context, client *api.Client, name string) (ConfigSummary, error) {
+	dash := ConfigSummary{Description: "-", Node: "-", Schedule: "-", ShellCmd: "-", Chdir: "-",
+		Email: "-", EmailCond: "-", EmailKeyword: "-", EmailRegex: "-", Params: "-"}
+
+	xmlStr, err := GetJobConfigXML(ctx, client, name)
+	if err != nil {
+		return dash, nil
+	}
+
+	s := dash
+	if v := extractTag(xmlStr, "description"); v != "" {
+		s.Description = v
+	}
+	if v := extractSchedule(xmlStr); v != "" {
+		s.Schedule = v
+	}
+	if v := extractEmailRecipients(xmlStr); v != "" {
+		s.Email = v
+		kw, re := extractEmailKeywordsRegex(xmlStr)
+		if cond := extractEmailCond(xmlStr, kw, re); cond != "" {
+			s.EmailCond = cond
+		}
+		if len(kw) > 0 {
+			s.EmailKeyword = strings.Join(kw, ",")
+		}
+		if re != "" {
+			s.EmailRegex = re
+		}
+	}
+	if params := extractParamDefs(xmlStr); len(params) > 0 {
+		s.Params = strings.Join(params, ",")
+	}
+
+	if strings.Contains(xmlStr, "<flow-definition") {
+		script := extractPipelineScript(xmlStr)
+		if m := pipelineAgentLabelRe.FindStringSubmatch(script); m != nil {
+			s.Node = m[1]
+		}
+	} else {
+		if v := extractTag(xmlStr, "assignedNode"); v != "" {
+			s.Node = v
+		}
+		if v := extractShellCommand(xmlStr); v != "" {
+			s.ShellCmd = v
+			if m := chdirPrefixRe.FindStringSubmatch(v); m != nil {
+				s.Chdir = m[1]
+			}
+		}
+	}
+
+	return s, nil
 }
 
 // GetBuildHistory returns up to count recent builds for jobName.

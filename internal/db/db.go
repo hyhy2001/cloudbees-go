@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	_ "embed"
 	"os"
+	"os/user"
 	"path/filepath"
 	"sync"
 
@@ -19,10 +20,33 @@ var (
 	pool = map[string]*sql.DB{}
 )
 
-// DefaultPath returns ~/.local/share/bee/cb.db (matching the TS binary's location).
-func DefaultPath() string {
+// beeRoot returns the directory bee's data lives under: BEE_DIR if set and
+// it exists, else the directory containing the running binary — matching
+// the TS build's detectBeeRoot() (data sits next to the binary, not in
+// ~/.local/share, so a portable/USB install carries its own DB with it).
+func beeRoot() string {
+	if d := os.Getenv("BEE_DIR"); d != "" {
+		if _, err := os.Stat(d); err == nil {
+			return d
+		}
+	}
+	if exe, err := os.Executable(); err == nil {
+		return filepath.Dir(exe)
+	}
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".local", "share", "bee", "cb.db")
+	return home
+}
+
+// DefaultPath returns <bee_root>/data/<username>/cb.db, matching the TS
+// binary's layout — a DB file per OS user, next to wherever bee lives.
+func DefaultPath() string {
+	username := "default"
+	if u, err := user.Current(); err == nil && u.Username != "" {
+		username = u.Username
+	}
+	dir := filepath.Join(beeRoot(), "data", username)
+	os.MkdirAll(dir, 0o700)
+	return filepath.Join(dir, "cb.db")
 }
 
 // Open returns (or lazily creates) a pooled *sql.DB for the given path.

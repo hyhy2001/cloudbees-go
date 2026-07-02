@@ -14,7 +14,7 @@ import (
 )
 
 // Tab names.
-var tabNames = []string{"Jobs", "Nodes", "Credentials", "Controllers"}
+var tabNames = []string{"Jobs", "Nodes", "Credentials", "Controllers", "Info"}
 
 // App is the root TUI model.
 type App struct {
@@ -26,13 +26,14 @@ type App struct {
 	nodeScreen screens.NodeScreen
 	credScreen screens.CredScreen
 	ctrlScreen screens.ControllerScreen
+	sysScreen  screens.SystemScreen
 	width      int
 	height     int
 	quitting   bool
 }
 
 // NewApp creates and initializes the TUI application.
-func NewApp(db *sql.DB, dbPath string) App {
+func NewApp(db *sql.DB, dbPath, version string) App {
 	return App{
 		db:         db,
 		dbPath:     dbPath,
@@ -42,6 +43,7 @@ func NewApp(db *sql.DB, dbPath string) App {
 		nodeScreen: screens.NewNodeScreen(db, dbPath),
 		credScreen: screens.NewCredScreen(db, dbPath),
 		ctrlScreen: screens.NewControllerScreen(db, dbPath, ""),
+		sysScreen:  screens.NewSystemScreen(db, dbPath, version),
 	}
 }
 
@@ -52,6 +54,7 @@ func (a App) Init() tea.Cmd {
 		a.nodeScreen.Init(),
 		a.credScreen.Init(),
 		a.ctrlScreen.Init(),
+		a.sysScreen.Init(),
 	)
 }
 
@@ -65,6 +68,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.nodeScreen, _ = a.nodeScreen.Update(msg)
 		a.credScreen, _ = a.credScreen.Update(msg)
 		a.ctrlScreen, _ = a.ctrlScreen.Update(msg)
+		a.sysScreen, _ = a.sysScreen.Update(msg)
 		return a, nil
 
 	case tea.KeyMsg:
@@ -90,6 +94,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "4":
 			a.activeTab = 3
 			return a, nil
+		case "5":
+			a.activeTab = 4
+			return a, nil
 		}
 		return a.delegateKey(msg)
 	}
@@ -106,6 +113,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	cmds = append(cmds, cmd)
 	a.ctrlScreen, cmd = a.ctrlScreen.Update(msg)
 	cmds = append(cmds, cmd)
+	a.sysScreen, cmd = a.sysScreen.Update(msg)
+	cmds = append(cmds, cmd)
 
 	return a, tea.Batch(cmds...)
 }
@@ -121,6 +130,8 @@ func (a App) delegateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.credScreen, cmd = a.credScreen.Update(msg)
 	case 3:
 		a.ctrlScreen, cmd = a.ctrlScreen.Update(msg)
+	case 4:
+		a.sysScreen, cmd = a.sysScreen.Update(msg)
 	}
 	return a, cmd
 }
@@ -174,6 +185,8 @@ func (a App) activeScreenView() string {
 		return a.credScreen.View()
 	case 3:
 		return a.ctrlScreen.View()
+	case 4:
+		return a.sysScreen.View()
 	}
 	return ""
 }
@@ -224,14 +237,18 @@ func renderStatusBar(activeTab, width int) string {
 		hints = append(hints,
 			theme.StyleKeyHint.Render("enter")+theme.StyleDim.Render(" select"),
 		)
+	case 4:
+		hints = append(hints,
+			theme.StyleKeyHint.Render("^X")+theme.StyleDim.Render(" clear cache"),
+		)
 	}
 	bar := "  " + strings.Join(hints, "  ")
 	return theme.StyleStatusBar.Width(width).Render(bar)
 }
 
 // Run launches the TUI program and blocks until the user quits.
-func Run(db *sql.DB, dbPath string) error {
-	app := NewApp(db, dbPath)
+func Run(db *sql.DB, dbPath, version string) error {
+	app := NewApp(db, dbPath, version)
 	p := tea.NewProgram(app, tea.WithAltScreen())
 	_, err := p.Run()
 	return err

@@ -1,6 +1,5 @@
 VERSION := $(shell cat VERSION 2>/dev/null || echo "1.0.0")
 BINARY  := dist/bee
-MODULE  := bee
 
 # All tools (Go, deps) live inside this directory — nothing touches system or ~/.local
 ROOT_DIR  := $(shell pwd)
@@ -14,33 +13,25 @@ GO_VERSION     := 1.22.2
 GO_TARBALL     := go$(GO_VERSION).linux-amd64.tar.gz
 GO_DOWNLOAD_URL := https://go.dev/dl/$(GO_TARBALL)
 
-# Build-time LM credentials — read from bee.lm.json if present
--include .bee-build.mk
+# Build-time llm-gateway config — read from bee.yaml if present.
+# bee.yaml is a flat `key: "value"` file (see bee.yaml.example) — not general YAML.
+# LM_URL/LM_API_KEY point at an llm-gateway instance, not a provider
+# directly — the real provider credential lives only on the gateway.
+BEE_YAML := bee.yaml
+yq = $(shell test -f $(BEE_YAML) && sed -n 's/^$(1): *"\(.*\)"$$/\1/p; s/^$(1): *\([^"]*\)$$/\1/p' $(BEE_YAML) | head -1)
 
-LM_URL     ?=
-LM_API_KEY ?=
-LM_MODEL   ?=
-LM_REWRITE ?=
-LM_CLIENT_ID     ?=
-LM_CLIENT_SECRET ?=
-LM_CHAT_PATH     ?=
-LM_EMBED_MODEL   ?=
-LM_EMBED_URL     ?=
-LM_EMBED_PATH    ?=
+LM_URL           ?= $(call yq,proxy_url)
+LM_API_KEY       ?= $(call yq,proxy_client_key)
+LM_MODEL         ?= $(call yq,model)
+LM_REWRITE       ?= $(call yq,rewrite_model)
+LM_CLIENT_ID     ?= $(call yq,client_id)
+LM_CLIENT_SECRET ?= $(call yq,client_secret)
+LM_CHAT_PATH     ?= $(call yq,chat_path)
+LM_EMBED_MODEL   ?= $(call yq,embed_model)
+LM_EMBED_URL     ?= $(call yq,embed_url)
+LM_EMBED_PATH    ?= $(call yq,embed_path)
 
-LDFLAGS := -s -w \
-  -X '$(MODULE)/internal/config.BakedLMURL=$(LM_URL)' \
-  -X '$(MODULE)/internal/config.BakedAPIKey=$(LM_API_KEY)' \
-  -X '$(MODULE)/internal/config.BakedModel=$(LM_MODEL)' \
-  -X '$(MODULE)/internal/config.BakedRewriteModel=$(LM_REWRITE)' \
-  -X '$(MODULE)/internal/config.BakedClientID=$(LM_CLIENT_ID)' \
-  -X '$(MODULE)/internal/config.BakedClientSecret=$(LM_CLIENT_SECRET)' \
-  -X '$(MODULE)/internal/config.BakedChatPath=$(LM_CHAT_PATH)' \
-  -X '$(MODULE)/internal/config.BakedEmbedModel=$(LM_EMBED_MODEL)' \
-  -X '$(MODULE)/internal/config.BakedEmbedURL=$(LM_EMBED_URL)' \
-  -X '$(MODULE)/internal/config.BakedEmbedPath=$(LM_EMBED_PATH)'
-
-.PHONY: build test install clean go-install
+.PHONY: build test install clean go-install gen-embeddings
 
 # Download and extract Go into .go/go/ inside this project directory
 go-install:
@@ -55,17 +46,36 @@ go-install:
 		echo "Go $$($(GOBIN) version | awk '{print $$3}') found at $(GOROOT)"; \
 	fi
 
+# bakeconfig XOR-encodes each LM_* value before it ever reaches -ldflags -X,
+# so plaintext credentials never land in the linker command line or the binary.
 build: go-install
 	@$(GO) mod download
 	@mkdir -p dist
-	$(GO) build -ldflags="$(LDFLAGS)" -o $(BINARY) ./cmd/bee
+	@$(GO) build -o "$(GO_DIR)/bakeconfig" ./cmd/bakeconfig
+	@LM_URL='$(LM_URL)' LM_API_KEY='$(LM_API_KEY)' LM_MODEL='$(LM_MODEL)' LM_REWRITE='$(LM_REWRITE)' \
+		LM_CLIENT_ID='$(LM_CLIENT_ID)' LM_CLIENT_SECRET='$(LM_CLIENT_SECRET)' \
+		LM_CHAT_PATH='$(LM_CHAT_PATH)' \
+		LM_EMBED_MODEL='$(LM_EMBED_MODEL)' LM_EMBED_URL='$(LM_EMBED_URL)' LM_EMBED_PATH='$(LM_EMBED_PATH)' \
+		"$(GO_DIR)/bakeconfig" > "$(GO_DIR)/bakeflags.txt"
+	$(GO) build -ldflags="-s -w $$(cat $(GO_DIR)/bakeflags.txt)" -o $(BINARY) ./cmd/bee
+	@rm -f "$(GO_DIR)/bakeflags.txt"
 	@echo "✓ Built $(BINARY) ($$(du -sh $(BINARY) | cut -f1))"
 
 test: go-install
 	$(GO) test ./...
 
-# install = just build; binary lives at dist/bee inside this directory
+# Optional: bake neural embeddings for `bee ask` vector search into
+# plugins/ask/embeddings_gen.go. Not part of `build` — bee ask works
+# BM25-only without this (see plugins/ask/embeddings_gen.go placeholder).
+# Requires embed_url/embed_model in bee.yaml (or LM_EMBED_* env).
+gen-embeddings: go-install
+	LM_URL='$(LM_URL)' LM_API_KEY='$(LM_API_KEY)' LM_CLIENT_ID='$(LM_CLIENT_ID)' LM_CLIENT_SECRET='$(LM_CLIENT_SECRET)' \
+		LM_EMBED_MODEL='$(LM_EMBED_MODEL)' LM_EMBED_URL='$(LM_EMBED_URL)' LM_EMBED_PATH='$(LM_EMBED_PATH)' \
+		$(GO) run ./cmd/genembeddings
+
+# install = build + delegate to `bee --install` (creates bee.csh + symlink)
 install: build
+	@$(ROOT_DIR)/$(BINARY) --install
 	@echo "✓ Binary ready: $(ROOT_DIR)/$(BINARY)"
 
 clean:

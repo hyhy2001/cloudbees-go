@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"bee/internal/api"
+	"bee/internal/cache"
 	"bee/internal/cli"
 	"bee/internal/db"
 	"bee/internal/session"
@@ -276,7 +277,12 @@ func jobListCmd(database *sql.DB, dbPath string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			jobs, err := ListJobs(cmd.Context(), client)
+			var jobs []JobDTO
+			if flagRecursive {
+				jobs, err = ListJobsRecursive(cmd.Context(), client, "")
+			} else {
+				jobs, err = ListJobs(cmd.Context(), database, client)
+			}
 			if err != nil {
 				return err
 			}
@@ -317,7 +323,6 @@ func jobListCmd(database *sql.DB, dbPath string) *cobra.Command {
 					}
 				}
 			}
-			_ = flagRecursive // ponytail: recursive folder listing
 			cli.Table([]string{"Name", "Type", "Status", "Last Build", "Description"}, rows)
 			fmt.Printf("  %d job(s)\n", len(rows))
 			return nil
@@ -349,7 +354,7 @@ func jobGetCmd(database *sql.DB, dbPath string) *cobra.Command {
 			if j.LastBuild != nil {
 				lastBuild = fmt.Sprintf("#%d %s", j.LastBuild.Number, j.LastBuild.Result)
 			}
-			cli.KV([][]string{
+			pairs := [][]string{
 				{"Name", j.Name},
 				{"Type", JobType(j.Class)},
 				{"Status", MapColor(j.Color)},
@@ -357,7 +362,21 @@ func jobGetCmd(database *sql.DB, dbPath string) *cobra.Command {
 				{"Buildable", fmt.Sprintf("%v", j.Buildable)},
 				{"Description", j.Description},
 				{"URL", j.URL},
-			})
+			}
+			if s, err := GetJobConfigSummary(cmd.Context(), client, args[0]); err == nil {
+				pairs = append(pairs,
+					[]string{"Node", s.Node},
+					[]string{"Schedule", s.Schedule},
+					[]string{"Shell", s.ShellCmd},
+					[]string{"Chdir", s.Chdir},
+					[]string{"Email", s.Email},
+					[]string{"Email Cond", s.EmailCond},
+					[]string{"Email Keyword", s.EmailKeyword},
+					[]string{"Email Regex", s.EmailRegex},
+					[]string{"Params", s.Params},
+				)
+			}
+			cli.KV(pairs)
 			return nil
 		},
 	}
@@ -390,18 +409,18 @@ func jobCreateCmd(database *sql.DB, dbPath string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			shell := fsShell
-			if fsChdir != "" && shell != "" {
-				shell = "cd " + fsChdir + " && " + shell
-			}
-			xmlBody := buildFreestyleXML(fsDesc, shell, fsNode, fsSchedule, fsEmail, fsEmailCond, fsEmailKeywords, fsEmailRegex, fsParamDefs)
-			path := "/createItem?name=" + url.QueryEscape(name)
-			if fsFolder != "" {
-				path = "/job/" + JobPathSegments(fsFolder) + path
-			}
-			if err := client.PostXML(cmd.Context(), path, xmlBody); err != nil {
+			err = CreateFreestyleJob(cmd.Context(), client, CreateFreestyleParams{
+				Name: name, Folder: fsFolder,
+				Description: fsDesc, Shell: fsShell, Chdir: fsChdir, Node: fsNode,
+				Schedule: fsSchedule,
+				Email:    fsEmail, EmailCond: fsEmailCond, EmailRegex: fsEmailRegex,
+				EmailChanged: cmd.Flags().Changed("email"), EmailCondChanged: cmd.Flags().Changed("email-cond"),
+				EmailKeywords: fsEmailKeywords, ParamDefs: fsParamDefs,
+			})
+			if err != nil {
 				return err
 			}
+			_ = cache.InvalidateResource(database, "job")
 			profile := getProfileName(database)
 			_ = db.TrackResource(database, "job", name, profile, client.BaseURL)
 			cli.Success(fmt.Sprintf("Created freestyle job '%s'", name))
@@ -430,14 +449,18 @@ func jobCreateCmd(database *sql.DB, dbPath string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			xmlBody := buildPipelineXML(plDesc, plScript, plSchedule, plEmail, plEmailCond, plEmailKeywords, plEmailRegex, plParamDefs)
-			path := "/createItem?name=" + url.QueryEscape(name)
-			if plFolder != "" {
-				path = "/job/" + JobPathSegments(plFolder) + path
-			}
-			if err := client.PostXML(cmd.Context(), path, xmlBody); err != nil {
+			err = CreatePipelineJob(cmd.Context(), client, CreatePipelineParams{
+				Name: name, Folder: plFolder,
+				Description: plDesc, Script: plScript, Node: plNode,
+				Schedule: plSchedule,
+				Email:    plEmail, EmailCond: plEmailCond, EmailRegex: plEmailRegex,
+				EmailChanged: cmd.Flags().Changed("email"), EmailCondChanged: cmd.Flags().Changed("email-cond"),
+				EmailKeywords: plEmailKeywords, ParamDefs: plParamDefs,
+			})
+			if err != nil {
 				return err
 			}
+			_ = cache.InvalidateResource(database, "job")
 			profile := getProfileName(database)
 			_ = db.TrackResource(database, "job", name, profile, client.BaseURL)
 			cli.Success(fmt.Sprintf("Created pipeline job '%s'", name))
@@ -447,7 +470,6 @@ func jobCreateCmd(database *sql.DB, dbPath string) *cobra.Command {
 	pipeline.Flags().StringVar(&plDesc, "description", "", "Job description")
 	pipeline.Flags().StringVar(&plScript, "script", "", "Pipeline script (Groovy inline or path)")
 	pipeline.Flags().StringVar(&plNode, "node", "", "Restrict to node/label")
-	_ = plNode // ponytail: pipeline node injection via script parse
 	pipeline.Flags().StringVar(&plSchedule, "schedule", "", "Cron schedule")
 	pipeline.Flags().StringVar(&plFolder, "folder", "", "Parent folder path")
 	addEmailFlags(pipeline, &plEmail, &plEmailCond, &plEmailKeywords, &plEmailRegex)
@@ -465,14 +487,10 @@ func jobCreateCmd(database *sql.DB, dbPath string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			xmlBody := buildFolderXML(fdDesc)
-			path := "/createItem?name=" + url.QueryEscape(name)
-			if fdFolder != "" {
-				path = "/job/" + JobPathSegments(fdFolder) + path
-			}
-			if err := client.PostXML(cmd.Context(), path, xmlBody); err != nil {
+			if err := CreateFolderJob(cmd.Context(), client, name, fdFolder, fdDesc); err != nil {
 				return err
 			}
+			_ = cache.InvalidateResource(database, "job")
 			cli.Success(fmt.Sprintf("Created folder '%s'", name))
 			return nil
 		},
@@ -492,8 +510,14 @@ func jobDeleteCmd(database *sql.DB, dbPath string) *cobra.Command {
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !flagYes {
-				cli.Warn(fmt.Sprintf("Delete %d job(s)? This cannot be undone. Use --yes to confirm.", len(args)))
-				return fmt.Errorf("aborted — use --yes to confirm")
+				label := fmt.Sprintf("job '%s'", args[0])
+				if len(args) > 1 {
+					label = fmt.Sprintf("%d jobs", len(args))
+				}
+				if !cli.Confirm(fmt.Sprintf("Delete %s? [y/N] ", label)) {
+					cli.Info("Cancelled.")
+					return nil
+				}
 			}
 			client, err := controller.GetActiveControllerClient(database, dbPath)
 			if err != nil {
@@ -508,6 +532,7 @@ func jobDeleteCmd(database *sql.DB, dbPath string) *cobra.Command {
 				_ = db.UntrackResource(database, "job", name, profile, client.BaseURL)
 				cli.Success(fmt.Sprintf("Deleted '%s'", name))
 			}
+			_ = cache.InvalidateResource(database, "job")
 			return nil
 		},
 	}
@@ -530,6 +555,7 @@ func jobCopyCmd(database *sql.DB, dbPath string) *cobra.Command {
 			if err := client.PostForm(cmd.Context(), "/createItem", params); err != nil {
 				return err
 			}
+			_ = cache.InvalidateResource(database, "job")
 			profile := getProfileName(database)
 			_ = db.TrackResource(database, "job", dst, profile, client.BaseURL)
 			cli.Success(fmt.Sprintf("Cloned '%s' → '%s'", src, dst))
@@ -554,6 +580,7 @@ func jobMoveCmd(database *sql.DB, dbPath string) *cobra.Command {
 			if err := client.PostForm(cmd.Context(), path, params); err != nil {
 				return err
 			}
+			_ = cache.InvalidateResource(database, "job")
 			cli.Success(fmt.Sprintf("Moved '%s' to '%s'", src, dst))
 			return nil
 		},
@@ -604,6 +631,7 @@ func jobRunCmd(database *sql.DB, dbPath string) *cobra.Command {
 	var params []string
 	var wait bool
 	var timeout int
+	var flagYes bool
 	cmd := &cobra.Command{
 		Use:   "run <name>",
 		Short: "Trigger a build",
@@ -614,28 +642,58 @@ func jobRunCmd(database *sql.DB, dbPath string) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if !flagYes {
+				if xmlStr, err := GetJobConfigXML(cmd.Context(), client, name); err == nil {
+					if nodeName := extractTag(xmlStr, "assignedNode"); nodeName != "" {
+						if warning, err := node.CheckNodeApprovalForJob(cmd.Context(), client, nodeName, name); err == nil && warning != "" {
+							cli.Warn(warning)
+							fmt.Print("Trigger build anyway? [y/N] ")
+							var answer string
+							fmt.Scanln(&answer)
+							if strings.ToLower(strings.TrimSpace(answer)) != "y" {
+								cli.Info("Cancelled.")
+								return nil
+							}
+						}
+					}
+				}
+			}
+			baseline, _ := GetLastBuildNumber(cmd.Context(), client, name)
+
 			path := "/job/" + JobPathSegments(name) + "/build"
+			var formParams map[string]string
 			if len(params) > 0 {
 				path = "/job/" + JobPathSegments(name) + "/buildWithParameters"
-				parts := make([]string, 0, len(params))
+				formParams = make(map[string]string, len(params))
 				for _, p := range params {
-					parts = append(parts, p)
+					key, val, _ := strings.Cut(p, "=")
+					formParams[url.QueryEscape(key)] = url.QueryEscape(val)
 				}
-				path += "?" + strings.Join(parts, "&")
 			}
-			if err := client.PostForm(cmd.Context(), path, nil); err != nil {
+			if err := client.PostForm(cmd.Context(), path, formParams); err != nil {
 				return err
 			}
 			cli.Success(fmt.Sprintf("Triggered build for '%s'", name))
+
+			buildNum := baseline
+			deadline := time.Now().Add(15 * time.Second)
+			for time.Now().Before(deadline) {
+				time.Sleep(2 * time.Second)
+				if n, err := GetLastBuildNumber(cmd.Context(), client, name); err == nil && n > baseline {
+					buildNum = n
+					break
+				}
+			}
+			if buildNum <= baseline {
+				cli.Warn("Timed out waiting for the new build to appear in the queue.")
+				return fmt.Errorf("could not determine new build number for '%s'", name)
+			}
+
 			if wait {
-				cli.Info(fmt.Sprintf("Waiting for build (timeout: %ds)...", timeout))
+				cli.Info(fmt.Sprintf("Waiting for build #%d (timeout: %ds)...", buildNum, timeout))
 				deadline := time.Now().Add(time.Duration(timeout) * time.Second)
 				for time.Now().Before(deadline) {
 					time.Sleep(3 * time.Second)
-					buildNum, err := GetLastBuildNumber(cmd.Context(), client, name)
-					if err != nil {
-						continue
-					}
 					b, err := GetBuildDetail(cmd.Context(), client, name, buildNum)
 					if err != nil {
 						continue
@@ -652,33 +710,27 @@ func jobRunCmd(database *sql.DB, dbPath string) *cobra.Command {
 	}
 	cmd.Flags().StringArrayVar(&params, "param", nil, "Build parameter KEY=value (repeatable)")
 	cmd.Flags().BoolVar(&wait, "wait", false, "Wait for build to finish")
-	cmd.Flags().IntVar(&timeout, "timeout", 300, "Max wait time in seconds")
+	cmd.Flags().IntVar(&timeout, "timeout", 120, "Max wait time in seconds")
+	cmd.Flags().BoolVar(&flagYes, "yes", false, "Skip node-approval confirmation prompt")
 	return cmd
 }
 
 func jobStopCmd(database *sql.DB, dbPath string) *cobra.Command {
 	return &cobra.Command{
-		Use:   "stop <name> [build-number]",
+		Use:   "stop <name> <build-number>",
 		Short: "Stop (abort) a running build",
-		Args:  cobra.RangeArgs(1, 2),
+		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
+			raw := strings.TrimSpace(args[1])
+			n, e := strconv.Atoi(raw)
+			if e != nil || strconv.Itoa(n) != raw || n <= 0 {
+				return fmt.Errorf("invalid build number: '%s' — must be a positive integer", args[1])
+			}
+			buildNum := n
 			client, err := controller.GetActiveControllerClient(database, dbPath)
 			if err != nil {
 				return err
-			}
-			buildNum := 0
-			if len(args) == 2 {
-				n, e := strconv.Atoi(args[1])
-				if e != nil {
-					return fmt.Errorf("invalid build number: %s", args[1])
-				}
-				buildNum = n
-			} else {
-				buildNum, err = GetLastBuildNumber(cmd.Context(), client, name)
-				if err != nil {
-					return err
-				}
 			}
 			path := fmt.Sprintf("/job/%s/%d/stop", JobPathSegments(name), buildNum)
 			if err := client.PostForm(cmd.Context(), path, nil); err != nil {
@@ -743,9 +795,10 @@ func jobLogCmd(database *sql.DB, dbPath string) *cobra.Command {
 func jobStatusCmd(database *sql.DB, dbPath string) *cobra.Command {
 	var flagCount int
 	cmd := &cobra.Command{
-		Use:   "status <name>",
-		Short: "Show build history for a job",
-		Args:  cobra.ExactArgs(1),
+		Use:     "status <name>",
+		Aliases: []string{"history"},
+		Short:   "Show build history for a job",
+		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
 			client, err := controller.GetActiveControllerClient(database, dbPath)
@@ -799,24 +852,49 @@ func jobUpdateCmd(database *sql.DB, dbPath string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			shell := fsShell
-			if fsChdir != "" && shell != "" {
-				shell = "cd " + fsChdir + " && " + shell
+
+			f := FreestyleUpdateFields{ClearEmailKeywords: fsClearKw, ClearEmailRegex: fsClearRe, ClearParams: fsClearParams}
+			flags := cmd.Flags()
+			if flags.Changed("description") {
+				f.Description = &fsDesc
 			}
-			emailKws := fsEmailKeywords
-			if fsClearKw {
-				emailKws = []string{}
+			if flags.Changed("node") {
+				f.Node = &fsNode
 			}
-			emailRe := fsEmailRegex
-			if fsClearRe {
-				emailRe = ""
+			if flags.Changed("shell") || flags.Changed("chdir") {
+				shell := fsShell
+				chdir := fsChdir
+				f.Shell = &shell
+				f.Chdir = &chdir
 			}
-			paramDefs := fsParamDefs
-			if fsClearParams {
-				paramDefs = []string{}
+			if flags.Changed("schedule") {
+				f.Schedule = &fsSchedule
 			}
-			xmlBody := buildFreestyleXML(fsDesc, shell, fsNode, fsSchedule, fsEmail, fsEmailCond, emailKws, emailRe, paramDefs)
-			return client.PostXML(cmd.Context(), "/job/"+JobPathSegments(name)+"/config.xml", xmlBody)
+			if flags.Changed("email") {
+				f.Email = &fsEmail
+			}
+			if flags.Changed("email-cond") {
+				f.EmailCond = &fsEmailCond
+			}
+			if flags.Changed("email-keyword") {
+				f.EmailKeywords = &fsEmailKeywords
+			}
+			if flags.Changed("email-regex") {
+				f.EmailRegex = &fsEmailRegex
+			}
+			if flags.Changed("param-def") {
+				f.ParamDefs = &fsParamDefs
+			}
+
+			if err := validateEmailFilterFlags(fsEmail, flags.Changed("email"), fsEmailKeywords, fsEmailRegex, fsEmailCond, flags.Changed("email-cond")); err != nil {
+				return err
+			}
+
+			if err := UpdateFreestyleJob(cmd.Context(), client, name, f); err != nil {
+				return err
+			}
+			_ = cache.InvalidateResource(database, "job")
+			return nil
 		},
 	}
 	freestyle.Flags().StringVar(&fsDesc, "description", "", "Job description")
@@ -828,7 +906,7 @@ func jobUpdateCmd(database *sql.DB, dbPath string) *cobra.Command {
 	freestyle.Flags().StringArrayVar(&fsParamDefs, "param-def", nil, "Add/replace build parameter NAME or NAME=default (repeatable)")
 	freestyle.Flags().BoolVar(&fsClearParams, "clear-params", false, "Remove all build parameters")
 
-	var plDesc, plScript, plSchedule, plEmail, plEmailCond, plEmailRegex string
+	var plDesc, plScript, plNode, plSchedule, plEmail, plEmailCond, plEmailRegex string
 	var plEmailKeywords, plParamDefs []string
 	var plClearKw, plClearRe, plClearParams bool
 	pipeline := &cobra.Command{
@@ -841,24 +919,64 @@ func jobUpdateCmd(database *sql.DB, dbPath string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			emailKws := plEmailKeywords
-			if plClearKw {
-				emailKws = []string{}
+
+			f := PipelineUpdateFields{ClearEmailKeywords: plClearKw, ClearEmailRegex: plClearRe, ClearParams: plClearParams}
+			flags := cmd.Flags()
+			if flags.Changed("description") {
+				f.Description = &plDesc
 			}
-			emailRe := plEmailRegex
-			if plClearRe {
-				emailRe = ""
+			if flags.Changed("script") {
+				origScript, err := ResolveScript(plScript)
+				if err != nil {
+					return err
+				}
+				finalScript := injectAgent(origScript, plNode)
+				if err := ValidatePipelineScript(cmd.Context(), client, origScript); err != nil {
+					return err
+				}
+				f.Script = &finalScript
+				if !flags.Changed("param-def") {
+					if autoParams := parseParametersFromScript(finalScript); len(autoParams) > 0 {
+						f.ParamDefs = &autoParams
+					}
+				} else {
+					merged := mergeParamDefs(parseParametersFromScript(finalScript), plParamDefs)
+					f.ParamDefs = &merged
+				}
 			}
-			paramDefs := plParamDefs
-			if plClearParams {
-				paramDefs = []string{}
+			if flags.Changed("schedule") {
+				f.Schedule = &plSchedule
 			}
-			xmlBody := buildPipelineXML(plDesc, plScript, plSchedule, plEmail, plEmailCond, emailKws, emailRe, paramDefs)
-			return client.PostXML(cmd.Context(), "/job/"+JobPathSegments(name)+"/config.xml", xmlBody)
+			if flags.Changed("email") {
+				f.Email = &plEmail
+			}
+			if flags.Changed("email-cond") {
+				f.EmailCond = &plEmailCond
+			}
+			if flags.Changed("email-keyword") {
+				f.EmailKeywords = &plEmailKeywords
+			}
+			if flags.Changed("email-regex") {
+				f.EmailRegex = &plEmailRegex
+			}
+			if flags.Changed("param-def") && !flags.Changed("script") {
+				f.ParamDefs = &plParamDefs
+			}
+
+			if err := validateEmailFilterFlags(plEmail, flags.Changed("email"), plEmailKeywords, plEmailRegex, plEmailCond, flags.Changed("email-cond")); err != nil {
+				return err
+			}
+
+			if err := UpdatePipelineJob(cmd.Context(), client, name, f); err != nil {
+				return err
+			}
+			_ = cache.InvalidateResource(database, "job")
+			return nil
 		},
 	}
 	pipeline.Flags().StringVar(&plDesc, "description", "", "Job description")
-	pipeline.Flags().StringVar(&plScript, "script", "", "Pipeline script")
+	pipeline.Flags().StringVar(&plScript, "script", "", "Pipeline script (Groovy inline or path)")
+	pipeline.Flags().StringVar(&plNode, "node", "", "Restrict to node/label (applied when --script is set)")
 	pipeline.Flags().StringVar(&plSchedule, "schedule", "", "Cron schedule")
 	addEmailFlags(pipeline, &plEmail, &plEmailCond, &plEmailKeywords, &plEmailRegex, &plClearKw, &plClearRe)
 	pipeline.Flags().StringArrayVar(&plParamDefs, "param-def", nil, "Add/replace build parameter NAME or NAME=default (repeatable)")
@@ -920,10 +1038,13 @@ func jobRemoveAgentCmd(database *sql.DB, dbPath string) *cobra.Command {
 		Short: "Revoke agent approval from a controlled-agent folder",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if !flagYes {
-				return fmt.Errorf("aborted — use --yes to confirm")
-			}
 			folder, agent := args[0], args[1]
+			if !flagYes {
+				if !cli.Confirm(fmt.Sprintf("Remove agent '%s' from '%s'? [y/N] ", agent, folder)) {
+					cli.Info("Cancelled.")
+					return nil
+				}
+			}
 			client, err := controller.GetActiveControllerClient(database, dbPath)
 			if err != nil {
 				return err

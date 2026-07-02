@@ -6,13 +6,29 @@ import (
 	"bee/internal/config"
 )
 
-func lmURL() string    { return config.LMURL() }
-func apiKey() string   { return config.APIKey() }
-func lmModel() string  { return config.Model() }
+func lmURL() string        { return config.LMURL() }
+func apiKey() string       { return config.APIKey() }
+func lmModel() string      { return config.Model() }
 func rewriteModel() string { return config.RewriteModel() }
-func clientID() string { return config.ClientID() }
+func clientID() string     { return config.ClientID() }
 func clientSecret() string { return config.ClientSecret() }
-func chatPath() string { return config.ChatPath() }
+func chatPath() string     { return config.ChatPath() }
+func embedModel() string   { return config.EmbedModel() }
+func embedURLCfg() string  { return config.EmbedURL() }
+func embedPath() string    { return config.EmbedPath() }
+
+// embedEndpoint resolves the effective embedding URL: explicit override wins,
+// else base LM URL + embed path.
+func embedEndpoint() string {
+	if u := embedURLCfg(); u != "" {
+		return u
+	}
+	base := lmURL()
+	if base == "" {
+		return ""
+	}
+	return joinURL(base, embedPath())
+}
 
 // chatEndpoint builds the full chat completions URL.
 func chatEndpoint() string {

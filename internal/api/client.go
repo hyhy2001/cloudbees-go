@@ -3,6 +3,7 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"bee/internal/cache"
 )
 
 // Client is a Jenkins REST API client.
@@ -57,7 +60,7 @@ func (c *Client) fetchCrumb(ctx context.Context) error {
 		return fmt.Errorf("crumb fetch: HTTP %d", resp.StatusCode)
 	}
 	var body struct {
-		Crumb            string `json:"crumb"`
+		Crumb             string `json:"crumb"`
 		CrumbRequestField string `json:"crumbRequestField"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
@@ -129,6 +132,23 @@ func (c *Client) GetJSON(ctx context.Context, path string, v any) error {
 		return fmt.Errorf("GET %s: HTTP %d: %s", path, resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 	return json.NewDecoder(resp.Body).Decode(v)
+}
+
+// GetJSONCached is GetJSON with a read-through SQLite cache. A cache miss
+// (or nil db) falls through to a live GetJSON call, then populates the
+// cache on success. cacheKey's TTL comes from cache.GetTTL.
+func (c *Client) GetJSONCached(ctx context.Context, db *sql.DB, path, cacheKey string, v any) error {
+	if db == nil {
+		return c.GetJSON(ctx, path, v)
+	}
+	if raw, ok, err := cache.GetCached(db, cacheKey); err == nil && ok {
+		return json.Unmarshal(raw, v)
+	}
+	if err := c.GetJSON(ctx, path, v); err != nil {
+		return err
+	}
+	_ = cache.SetCache(db, cacheKey, v)
+	return nil
 }
 
 // PostJSON sends a POST with a JSON body and decodes the response.

@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-
 )
 
 // Register adds the `bee ask` command to root.
@@ -22,7 +21,7 @@ func Register(root *cobra.Command, db *sql.DB, dbPath string) {
 	cmd := &cobra.Command{
 		Use:   "ask <query...>",
 		Short: "AI-powered contextual help for bee commands",
-		Long:  "Ask how to use bee. Requires LM endpoint via CB_DATABRICK_URL (+ CB_API_KEY or OAuth creds) or bee.lm.json.",
+		Long:  "Ask how to use bee. Requires LM endpoint via CB_DATABRICK_URL (+ CB_API_KEY or OAuth creds) or bee.yaml at build time.",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			query := strings.TrimSpace(strings.Join(args, " "))
@@ -38,7 +37,7 @@ func Register(root *cobra.Command, db *sql.DB, dbPath string) {
 
 			provider := buildProvider()
 			if provider == nil {
-				return fmt.Errorf("bee ask requires an LM provider. Set CB_DATABRICK_URL (and CB_API_KEY or OAuth credentials) or create bee.lm.json")
+				return fmt.Errorf("bee ask requires an LM provider. Set CB_DATABRICK_URL (and CB_API_KEY or OAuth credentials) or create bee.yaml and rebuild")
 			}
 
 			corpus := BuildCorpus(root)
@@ -90,6 +89,9 @@ func Register(root *cobra.Command, db *sql.DB, dbPath string) {
 }
 
 // buildProvider selects and initialises the LM provider from config.
+// If ClientID/ClientSecret are set against a Databricks host, it OAuths
+// directly (legacy path). Otherwise it treats lmURL() as an OpenAI-compatible
+// endpoint — typically an llm-gateway instance holding the real credential.
 func buildProvider() LMProvider {
 	u := lmURL()
 	if u == "" {

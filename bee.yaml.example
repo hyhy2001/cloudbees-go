@@ -1,0 +1,11 @@
+# --- Option A: via llm-gateway (recommended — real provider credential never baked in) ---
+proxy_url: "https://your-llm-gateway.example.com"
+proxy_client_key: "client-key-issued-by-llm-gateway-dashboard"
+
+# --- Option B: direct Databricks OAuth M2M (legacy — bakes client_id/secret into the binary) ---
+# client_id: "your-databricks-oauth-client-id"
+# client_secret: "your-databricks-oauth-client-secret"
+
+model: "your-chat-model"
+embed_model: "your-embed-model"
+embed_url: "https://your-llm-gateway.example.com/v1/embeddings"

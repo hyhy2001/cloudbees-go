@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"bee/internal/api"
+	"bee/internal/cache"
 	"bee/internal/cli"
 	"bee/internal/db"
 	"bee/internal/session"
@@ -39,12 +40,12 @@ func getProfileName(database *sql.DB) string {
 }
 
 // listNodes fetches all nodes from /computer/api/json.
-func listNodes(client *api.Client) ([]nodeDTO, error) {
+func listNodes(database *sql.DB, client *api.Client) ([]nodeDTO, error) {
 	var result struct {
 		Computer []nodeDTO `json:"computer"`
 	}
 	tree := "computer[displayName,description,offline,numExecutors,assignedLabels[name]]"
-	if err := client.GetJSON(nil, "/computer/api/json?tree="+url.QueryEscape(tree), &result); err != nil {
+	if err := client.GetJSONCached(nil, database, "/computer/api/json?tree="+url.QueryEscape(tree), "nodes.list", &result); err != nil {
 		return nil, err
 	}
 	return result.Computer, nil
@@ -204,8 +205,13 @@ func setXMLElement(xmlStr, tag, value string) string {
 
 func buildLauncherXML(launcherType, host string, port int, credID, javaPath string) string {
 	if launcherType == "ssh" {
-		if port <= 0 {
+		switch {
+		case port == 0:
 			port = 22
+		case port < 1:
+			port = 1
+		case port > 65535:
+			port = 65535
 		}
 		return `  <launcher class="hudson.plugins.sshslaves.SSHLauncher" plugin="ssh-slaves">` + "\n" +
 			`    <host>` + xmlEscape(host) + `</host>` + "\n" +
@@ -265,15 +271,16 @@ func swapXMLSubtree(xmlStr, tag, block string) string {
 
 // parseNodeConfig extracts launcher and retention from config.xml for display.
 type nodeConfig struct {
-	launcherType  string
-	host          string
-	port          int
-	credID        string
-	javaPath      string
-	availability  string
-	inDemandDelay int
-	idleDelay     int
-	remoteDir     string
+	launcherType    string
+	host            string
+	port            int
+	credID          string
+	javaPath        string
+	availability    string
+	inDemandDelay   int
+	idleDelay       int
+	remoteDir       string
+	controlledAgent bool
 }
 
 func parseNodeConfigXML(xmlStr string) nodeConfig {
@@ -287,6 +294,7 @@ func parseNodeConfigXML(xmlStr string) nodeConfig {
 	if strings.Contains(xmlStr, `RetentionStrategy$Demand`) {
 		cfg.availability = "demand"
 	}
+	cfg.controlledAgent = strings.Contains(xmlStr, controlledAgentPropTag)
 
 	// Simple text extractions
 	extractTag := func(tag string) string {
@@ -327,7 +335,7 @@ func nodeListCmd(database *sql.DB, dbPath string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			allNodes, err := listNodes(client)
+			allNodes, err := listNodes(database, client)
 			if err != nil {
 				return err
 			}
@@ -402,10 +410,10 @@ func nodeGetCmd(database *sql.DB, dbPath string) *cobra.Command {
 			}
 			name := args[0]
 			var detail struct {
-				DisplayName  string `json:"displayName"`
-				Offline      bool   `json:"offline"`
-				NumExecutors int    `json:"numExecutors"`
-				Description  string `json:"description"`
+				DisplayName    string `json:"displayName"`
+				Offline        bool   `json:"offline"`
+				NumExecutors   int    `json:"numExecutors"`
+				Description    string `json:"description"`
 				AssignedLabels []struct {
 					Name string `json:"name"`
 				} `json:"assignedLabels"`
@@ -448,6 +456,7 @@ func nodeGetCmd(database *sql.DB, dbPath string) *cobra.Command {
 					pairs = append(pairs, []string{"in_demand_delay", fmt.Sprintf("%dm", cfg.inDemandDelay)})
 					pairs = append(pairs, []string{"idle_delay", fmt.Sprintf("%dm", cfg.idleDelay)})
 				}
+				pairs = append(pairs, []string{"controlled_agent", fmt.Sprintf("%v", cfg.controlledAgent)})
 			}
 			cli.KV(pairs)
 			return nil
@@ -457,17 +466,17 @@ func nodeGetCmd(database *sql.DB, dbPath string) *cobra.Command {
 
 func nodeCreateCmd(database *sql.DB, dbPath string) *cobra.Command {
 	var (
-		flagRemoteDir    string
-		flagExecutors    int
-		flagLabels       string
-		flagDesc         string
-		flagHost         string
-		flagPort         int
-		flagCredID       string
-		flagJavaPath     string
-		flagAvail        string
-		flagInDemand     int
-		flagIdleDelay    int
+		flagRemoteDir string
+		flagExecutors int
+		flagLabels    string
+		flagDesc      string
+		flagHost      string
+		flagPort      int
+		flagCredID    string
+		flagJavaPath  string
+		flagAvail     string
+		flagInDemand  int
+		flagIdleDelay int
 	)
 	cmd := &cobra.Command{
 		Use:   "create <name>",
@@ -503,6 +512,7 @@ func nodeCreateCmd(database *sql.DB, dbPath string) *cobra.Command {
 				cli.Warn(fmt.Sprintf("Unknown --availability '%s'; defaulted to 'always'. Valid: always | demand", flagAvail))
 			}
 
+			_ = cache.InvalidateResource(database, "node")
 			profile := getProfileName(database)
 			_ = db.TrackResource(database, "node", name, profile, client.BaseURL)
 			cli.Success(fmt.Sprintf("Node '%s' created.", name))
@@ -554,6 +564,7 @@ func nodeCopyCmd(database *sql.DB, dbPath string) *cobra.Command {
 				b, _ := io.ReadAll(resp.Body)
 				return fmt.Errorf("copy node: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
 			}
+			_ = cache.InvalidateResource(database, "node")
 			profile := getProfileName(database)
 			_ = db.TrackResource(database, "node", newName, profile, client.BaseURL)
 			cli.Success(fmt.Sprintf("Node '%s' created (copied from '%s').", newName, srcName))
@@ -595,6 +606,7 @@ func nodeDeleteCmd(database *sql.DB, dbPath string) *cobra.Command {
 				_ = db.UntrackResource(database, "node", name, profile, client.BaseURL)
 				cli.Success(fmt.Sprintf("Node '%s' deleted.", name))
 			}
+			_ = cache.InvalidateResource(database, "node")
 			return nil
 		},
 	}
@@ -665,19 +677,19 @@ func nodeOnlineCmd(database *sql.DB, dbPath string) *cobra.Command {
 
 func nodeUpdateCmd(database *sql.DB, dbPath string) *cobra.Command {
 	var (
-		flagDesc        string
-		flagRemoteDir   string
-		flagExecutors   int
-		flagLabels      string
-		flagLauncher    string
-		flagHost        string
-		flagPort        int
-		flagCredID      string
-		flagJavaPath    string
-		flagAvail       string
-		flagInDemand    int
-		flagIdleDelay   int
-		flagControlled  string
+		flagDesc       string
+		flagRemoteDir  string
+		flagExecutors  int
+		flagLabels     string
+		flagLauncher   string
+		flagHost       string
+		flagPort       int
+		flagCredID     string
+		flagJavaPath   string
+		flagAvail      string
+		flagInDemand   int
+		flagIdleDelay  int
+		flagControlled string
 	)
 	cmd := &cobra.Command{
 		Use:   "update <name>",
@@ -764,30 +776,13 @@ func nodeUpdateCmd(database *sql.DB, dbPath string) *cobra.Command {
 			}
 
 			if cmd.Flags().Changed("controlled-agent") {
-				const propTag = "com.cloudbees.jenkins.plugins.foldersplus.SecurityTokensNodeProperty"
-				propBlock := "  <" + propTag + ">\n    <acceptTasksWithoutOwningItem>false</acceptTasksWithoutOwningItem>\n  </" + propTag + ">"
-				enable := flagControlled == "true"
-				hasProp := strings.Contains(xmlStr, propTag)
-				if enable && !hasProp {
-					if strings.Contains(xmlStr, "<nodeProperties>") {
-						xmlStr = strings.Replace(xmlStr, "<nodeProperties>", "<nodeProperties>\n"+propBlock, 1)
-					} else {
-						for _, rootClose := range []string{"</slave>", "</agent>", "</hudson.slaves.DumbSlave>"} {
-							if k := strings.LastIndex(xmlStr, rootClose); k >= 0 {
-								xmlStr = xmlStr[:k] + "  <nodeProperties>\n" + propBlock + "\n  </nodeProperties>\n" + xmlStr[k:]
-								break
-							}
-						}
-					}
-				} else if !enable && hasProp {
-					// Remove the block
-					xmlStr = swapXMLSubtree(xmlStr, propTag, "")
-				}
+				xmlStr = setControlledAgentXML(xmlStr, flagControlled == "true")
 			}
 
 			if err := client.PostXML(cmd.Context(), "/computer/"+nodeSeg(name)+"/config.xml", xmlStr); err != nil {
 				return err
 			}
+			_ = cache.InvalidateResource(database, "node")
 			cli.Success(fmt.Sprintf("Node '%s' updated.", name))
 			if cmd.Flags().Changed("launcher") && flagLauncher == "ssh" && cmd.Flags().Changed("cred-id") && flagCredID == "" {
 				cli.Warn("SSH launcher with no credential set — ensure key-based auth is configured.")

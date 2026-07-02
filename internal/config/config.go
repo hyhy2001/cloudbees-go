@@ -2,8 +2,14 @@
 //
 // Priority order (highest wins):
 //  1. Runtime env  — CB_DATABRICK_URL / CB_API_KEY / CB_LM_MODEL / ...
-//  2. Build-time   — baked via -ldflags "-X config.BakedLMURL=<xor-encoded>"
+//  2. Build-time   — baked via -ldflags "-X config.BakedLMURL=<xor-encoded>",
+//     values sourced from bee.yaml at build time (see Makefile).
 //     Values are XOR-obfuscated so they don't appear in `strings ./bee`.
+//
+// LMURL/APIKey normally point at an llm-gateway instance (OpenAI-compatible),
+// which holds the real provider credential server-side. ClientID/ClientSecret
+// are only for the legacy direct-Databricks-OAuth path (provider_databricks.go),
+// kept for setups that call Databricks directly instead of through a gateway.
 //
 // When LM_URL is empty, no provider is registered and bee ask runs offline.
 package config
@@ -43,10 +49,11 @@ func pick(envKey, baked, fallback string) string {
 	return fallback
 }
 
-// LMURL is the base URL for the LM provider.
+// LMURL is the base URL for the LM provider (an llm-gateway instance, or a
+// direct provider host when ClientID/ClientSecret are set).
 func LMURL() string { return pick("CB_DATABRICK_URL", BakedLMURL, "") }
 
-// APIKey is the static Bearer token.
+// APIKey is the static Bearer token (llm-gateway client key, or provider key).
 func APIKey() string { return pick("CB_API_KEY", BakedAPIKey, "") }
 
 // Model is the main chat model identifier.
@@ -61,10 +68,10 @@ func RewriteModel() string {
 	return v
 }
 
-// ClientID is the OAuth M2M client ID (Databricks).
+// ClientID is the OAuth M2M client ID (direct Databricks provider only).
 func ClientID() string { return pick("CB_CLIENT_ID", BakedClientID, "") }
 
-// ClientSecret is the OAuth M2M client secret (Databricks).
+// ClientSecret is the OAuth M2M client secret (direct Databricks provider only).
 func ClientSecret() string { return pick("CB_CLIENT_SECRET", BakedClientSecret, "") }
 
 // ChatPath is the chat completions endpoint path.
