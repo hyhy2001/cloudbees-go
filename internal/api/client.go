@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -190,15 +191,11 @@ func (c *Client) PostXML(ctx context.Context, path, xmlBody string) error {
 // from the response (without following the redirect). Used for Jenkins endpoints
 // that 302-redirect to the newly created resource URL.
 func (c *Client) PostFormGetLocation(ctx context.Context, path string, params map[string]string) (string, error) {
-	var sb strings.Builder
-	first := true
+	vals := make(url.Values, len(params))
 	for k, v := range params {
-		if !first {
-			sb.WriteByte('&')
-		}
-		sb.WriteString(k + "=" + v)
-		first = false
+		vals[k] = []string{v}
 	}
+	encoded := vals.Encode()
 
 	// Use a client that does NOT follow redirects so we can read Location header.
 	noRedirect := &http.Client{
@@ -208,7 +205,7 @@ func (c *Client) PostFormGetLocation(ctx context.Context, path string, params ma
 		Timeout: 30 * time.Second,
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+path, strings.NewReader(sb.String()))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+path, strings.NewReader(encoded))
 	if err != nil {
 		return "", err
 	}
@@ -254,21 +251,19 @@ func (c *Client) GetHTML(ctx context.Context, path string) (string, error) {
 
 // PostForm sends a POST with form-encoded body.
 func (c *Client) PostForm(ctx context.Context, path string, params map[string]string) error {
-	var sb strings.Builder
+	vals := make(url.Values, len(params))
 	for k, v := range params {
-		if sb.Len() > 0 {
-			sb.WriteByte('&')
-		}
-		sb.WriteString(k + "=" + v)
+		vals[k] = []string{v}
 	}
-	resp, err := c.Do(ctx, http.MethodPost, path, strings.NewReader(sb.String()), "application/x-www-form-urlencoded")
+	body := vals.Encode()
+	resp, err := c.Do(ctx, http.MethodPost, path, strings.NewReader(body), "application/x-www-form-urlencoded")
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("POST %s: HTTP %d: %s", path, resp.StatusCode, strings.TrimSpace(string(body)))
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("POST %s: HTTP %d: %s", path, resp.StatusCode, strings.TrimSpace(string(respBody)))
 	}
 	return nil
 }

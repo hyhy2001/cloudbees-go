@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"strings"
 
@@ -98,13 +99,13 @@ func buildNodeFormPayload(name, remoteDir string, numExecutors int, labels, desc
 		Class        string `json:"$class"`
 	}
 	type sshLauncher struct {
-		StaplerClass string    `json:"stapler-class"`
-		Class        string    `json:"$class"`
-		Host         string    `json:"host"`
-		Port         int       `json:"port"`
-		CredID       string    `json:"credentialsId"`
-		JavaPath     string    `json:"javaPath"`
-		Verify       sshVerify `json:"sshHostKeyVerificationStrategy"`
+		StaplerClass string     `json:"stapler-class"`
+		Class        string     `json:"$class"`
+		Host         string     `json:"host"`
+		Port         int        `json:"port"`
+		CredID       string     `json:"credentialsId"`
+		JavaPath     string     `json:"javaPath"`
+		Verify       *sshVerify `json:"sshHostKeyVerificationStrategy,omitempty"`
 	}
 	type jnlpLauncher struct {
 		StaplerClass string `json:"stapler-class"`
@@ -119,7 +120,7 @@ func buildNodeFormPayload(name, remoteDir string, numExecutors int, labels, desc
 			StaplerClass: "hudson.plugins.sshslaves.SSHLauncher",
 			Class:        "hudson.plugins.sshslaves.SSHLauncher",
 			Host:         host, Port: port, CredID: credID, JavaPath: javaPath,
-			Verify: sshVerify{
+			Verify: &sshVerify{
 				StaplerClass: "hudson.plugins.sshslaves.verifiers.NonVerifyingKeyVerificationStrategy",
 				Class:        "hudson.plugins.sshslaves.verifiers.NonVerifyingKeyVerificationStrategy",
 			},
@@ -214,7 +215,7 @@ func buildLauncherXML(launcherType, host string, port int, credID, javaPath stri
 		case port > 65535:
 			port = 65535
 		}
-		return `  <launcher class="hudson.plugins.sshslaves.SSHLauncher" plugin="ssh-slaves">` + "\n" +
+		return `  <launcher class="hudson.plugins.sshslaves.SSHLauncher">` + "\n" +
 			`    <host>` + xmlEscape(host) + `</host>` + "\n" +
 			`    <port>` + fmt.Sprintf("%d", port) + `</port>` + "\n" +
 			`    <credentialsId>` + xmlEscape(credID) + `</credentialsId>` + "\n" +
@@ -504,10 +505,49 @@ func nodeCreateCmd(database *sql.DB, dbPath string) *cobra.Command {
 				return err
 			}
 			defer resp.Body.Close()
+
+			if flagHost != "" && (resp.StatusCode == http.StatusInternalServerError || resp.StatusCode == http.StatusBadRequest) {
+				// SSH doCreateItem failed — fall back: create JNLP node, then patch config.xml
+				resp.Body.Close()
+				jnlpBody := buildNodeFormPayload(name, flagRemoteDir, flagExecutors, flagLabels, flagDesc,
+					"", 22, "", flagJavaPath, flagAvail, flagInDemand, flagIdleDelay)
+				resp2, err2 := client.Do(cmd.Context(), "POST", "/computer/doCreateItem", strings.NewReader(jnlpBody), "application/x-www-form-urlencoded")
+				if err2 != nil {
+					return err2
+				}
+				resp2.Body.Close()
+				if resp2.StatusCode >= 300 && resp2.StatusCode != 302 {
+					b, _ := io.ReadAll(resp2.Body)
+					return fmt.Errorf("create node: HTTP %d: %s", resp2.StatusCode, strings.TrimSpace(string(b)))
+				}
+				// Patch config.xml with SSH launcher
+				jp := flagJavaPath
+				if jp == "" {
+					jp = defaultJavaPath
+				}
+				xmlStr, xmlErr := GetNodeConfigXML(cmd.Context(), client, name)
+				if xmlErr == nil {
+					sshBlock := buildLauncherXML("ssh", flagHost, flagPort, flagCredID, jp)
+					xmlStr = swapXMLSubtree(xmlStr, "launcher", sshBlock)
+					if patchErr := client.PostXML(cmd.Context(), "/computer/"+nodeSeg(name)+"/config.xml", xmlStr); patchErr == nil {
+						// Verify patch took effect
+						if readback, rerr := GetNodeConfigXML(cmd.Context(), client, name); rerr == nil {
+							if !strings.Contains(readback, "SSHLauncher") {
+								cli.Warn("Node created as JNLP — this server does not support setting SSH launcher via API. Configure SSH manually in Jenkins UI.")
+							}
+						}
+					}
+				}
+				// Fall through to success output below
+				goto createSuccess
+			}
+
 			if resp.StatusCode >= 300 && resp.StatusCode != 302 {
 				b, _ := io.ReadAll(resp.Body)
 				return fmt.Errorf("create node: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
 			}
+
+		createSuccess:
 
 			if flagAvail != "demand" && flagAvail != "always" {
 				cli.Warn(fmt.Sprintf("Unknown --availability '%s'; defaulted to 'always'. Valid: always | demand", flagAvail))
@@ -749,6 +789,9 @@ func nodeUpdateCmd(database *sql.DB, dbPath string) *cobra.Command {
 				jp := current.javaPath
 				if cmd.Flags().Changed("java-path") {
 					jp = flagJavaPath
+				}
+				if lt == "ssh" && jp == "" {
+					jp = defaultJavaPath
 				}
 				block := buildLauncherXML(lt, h, p, cred, jp)
 				xmlStr = swapXMLSubtree(xmlStr, "launcher", block)
