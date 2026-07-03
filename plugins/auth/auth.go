@@ -2,6 +2,7 @@
 package auth
 
 import (
+	"crypto/tls"
 	"database/sql"
 	"fmt"
 	"net/http"
@@ -38,6 +39,7 @@ func loginCmd(db *sql.DB, dbPath string) *cobra.Command {
 		username  string
 		token     string
 		profile   string
+		insecure  bool
 	)
 	cmd := &cobra.Command{
 		Use:   "login",
@@ -67,7 +69,7 @@ func loginCmd(db *sql.DB, dbPath string) *cobra.Command {
 
 			// Validate credentials with a test request
 			serverURL = strings.TrimRight(serverURL, "/")
-			if err := validateCredentials(serverURL, username, token); err != nil {
+			if err := validateCredentials(serverURL, username, token, insecure); err != nil {
 				return fmt.Errorf("login failed: %w", err)
 			}
 
@@ -80,8 +82,14 @@ func loginCmd(db *sql.DB, dbPath string) *cobra.Command {
 			if err := session.SetActiveProfile(db, profile); err != nil {
 				return err
 			}
+			if insecure {
+				_ = session.SetInsecureTLS(db, profile, true)
+			}
 
 			cli.Success(fmt.Sprintf("Logged in as '%s' on %s (profile: %s)", username, serverURL, profile))
+			if insecure {
+				cli.Warn("TLS verification disabled — only use on trusted networks.")
+			}
 			return nil
 		},
 	}
@@ -89,17 +97,24 @@ func loginCmd(db *sql.DB, dbPath string) *cobra.Command {
 	cmd.Flags().StringVar(&username, "username", "", "Your login username")
 	cmd.Flags().StringVar(&token, "token", "", "Your API Token")
 	cmd.Flags().StringVar(&profile, "profile", "default", "Named profile to save this login under")
+	cmd.Flags().BoolVar(&insecure, "insecure", false, "Skip TLS certificate verification (self-signed certs)")
 	return cmd
 }
 
-func validateCredentials(serverURL, username, token string) error {
+func validateCredentials(serverURL, username, token string, insecure bool) error {
 	basicToken := session.BuildBasicToken(username, token)
 	req, err := http.NewRequest(http.MethodGet, serverURL+"/api/json?tree=url,nodeName", nil)
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Authorization", "Basic "+basicToken)
-	resp, err := (&http.Client{}).Do(req)
+	httpClient := &http.Client{}
+	if insecure {
+		httpClient.Transport = &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec
+		}
+	}
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		// Try parsing the URL to give a clearer error
 		if _, e := url.Parse(serverURL); e != nil {

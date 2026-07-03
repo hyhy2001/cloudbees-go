@@ -3,6 +3,7 @@ package api
 
 import (
 	"context"
+	"crypto/tls"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -33,6 +34,18 @@ func New(baseURL, basicToken string) *Client {
 		BaseURL:    strings.TrimRight(baseURL, "/"),
 		BasicToken: basicToken,
 		HTTPClient: &http.Client{Timeout: 30 * time.Second},
+	}
+}
+
+// NewInsecure creates a Client that skips TLS certificate verification.
+func NewInsecure(baseURL, basicToken string) *Client {
+	transport := &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec
+	}
+	return &Client{
+		BaseURL:    strings.TrimRight(baseURL, "/"),
+		BasicToken: basicToken,
+		HTTPClient: &http.Client{Timeout: 30 * time.Second, Transport: transport},
 	}
 }
 

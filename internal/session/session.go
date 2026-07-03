@@ -216,7 +216,28 @@ func DeleteProfile(db *sql.DB, name string) error {
 	return err
 }
 
-// BuildBasicToken returns base64(username:token) for HTTP Basic Auth.
+// SetInsecureTLS stores whether TLS verification should be skipped for a profile.
+func SetInsecureTLS(db *sql.DB, profileName string, insecure bool) error {
+	val := "0"
+	if insecure {
+		val = "1"
+	}
+	_, err := db.Exec(`
+		INSERT INTO settings (key, value) VALUES (?, ?)
+		ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
+		"tls_insecure:"+profileName, val)
+	return err
+}
+
+// GetInsecureTLS returns true if TLS verification should be skipped for this profile.
+func GetInsecureTLS(db *sql.DB, profileName string) bool {
+	var val string
+	if err := db.QueryRow(`SELECT value FROM settings WHERE key=?`, "tls_insecure:"+profileName).Scan(&val); err != nil {
+		return false
+	}
+	return val == "1"
+}
+
 func BuildBasicToken(username, token string) string {
 	raw := username + ":" + token
 	_ = sha256.New() // ensure crypto/sha256 is linked for future use

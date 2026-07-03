@@ -46,6 +46,9 @@ func newClient(database *sql.DB, dbPath string) (*api.Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w\n\nRun: bee auth login", err)
 	}
+	if session.GetInsecureTLS(database, s.Profile.Name) {
+		return api.NewInsecure(s.Profile.ServerURL, s.BasicToken), nil
+	}
 	return api.New(s.Profile.ServerURL, s.BasicToken), nil
 }
 
@@ -238,9 +241,16 @@ func GetActiveControllerClient(database *sql.DB, dbPath string) (*api.Client, er
 	if err != nil {
 		return nil, err
 	}
+	insecure := session.GetInsecureTLS(database, s.Profile.Name)
 	_, url, ok := getActiveController(database)
 	if ok && url != "" {
+		if insecure {
+			return api.NewInsecure(url, s.BasicToken), nil
+		}
 		return api.New(url, s.BasicToken), nil
+	}
+	if insecure {
+		return api.NewInsecure(s.Profile.ServerURL, s.BasicToken), nil
 	}
 	return api.New(s.Profile.ServerURL, s.BasicToken), nil
 }
