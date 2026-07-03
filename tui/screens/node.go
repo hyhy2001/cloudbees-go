@@ -553,13 +553,6 @@ func (s NodeScreen) Update(msg tea.Msg) (NodeScreen, tea.Cmd) {
 				s.modal.Show("Delete node", fmt.Sprintf("Delete node '%s'? This cannot be undone.", c.Name))
 			}
 			return s, nil
-		case "ctrl+o":
-			if c := s.current(); c != nil {
-				s.pending = c.Name
-				s.action = "toggle"
-				s.modal.Show("Toggle offline", fmt.Sprintf("Toggle offline state of '%s'?", c.Name))
-			}
-			return s, nil
 		case "f":
 			s.autoRefresh = !s.autoRefresh
 			if s.autoRefresh {
@@ -851,6 +844,6 @@ func (s NodeScreen) View() string {
 		}
 	}
 
-	sb.WriteString(theme.StyleDim.Render("Enter menu  ·  ^N new  ·  ^A mine/all  ·  i track  ·  u untrack  ·  ^D delete  ·  ^O offline  ·  f auto-refresh  ·  r refresh  ·  / search"))
+	sb.WriteString(theme.StyleDim.Render("Enter menu  ·  ^N new  ·  ^A mine/all  ·  i track  ·  u untrack  ·  ^D delete  ·  f auto-refresh  ·  r refresh  ·  / search"))
 	return sb.String()
 }

@@ -10,6 +10,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"bee/internal/session"
+	"bee/plugins/auth"
 	"bee/plugins/controller"
 	"bee/tui/components"
 	"bee/tui/screens"
@@ -70,13 +72,22 @@ type App struct {
 	help       components.HelpOverlay
 	cmdLog     components.CommandLog
 	toast      components.Toast
+
+	// session/global flow
+	form          components.FormModal
+	confirm       components.ConfirmModal
+	loggedIn      bool
+	username      string
+	activeCtrl    string // active controller name for the header
+	profile       string
+	pendingLogout string // profile awaiting logout confirmation
 }
 
 // activeInputCaptured reports whether the currently active screen owns an
 // overlay/form/menu that wants raw keys — in that case the app-global
 // tab-switch/digit-jump/quit bindings must not intercept the keystroke.
 func (a App) activeInputCaptured() bool {
-	if a.help.Visible() {
+	if a.help.Visible() || a.form.Visible() || a.confirm.Visible() {
 		return true
 	}
 	switch a.allTabIndex() {
@@ -107,6 +118,7 @@ func NewApp(db *sql.DB, dbPath, version string) App {
 		sysScreen:  screens.NewSystemScreen(db, dbPath, version),
 	}
 	a.rebuildTabs(false)
+	a.loadSessionInfo()
 	a.help.Title = "Keyboard Shortcuts"
 	a.help.SetEntries(
 		[]string{"Global", "Jobs", "Nodes", "Credentials", "Controllers"},
@@ -114,6 +126,9 @@ func NewApp(db *sql.DB, dbPath, version string) App {
 			{
 				{Key: "←→ / Tab", Desc: "switch tab"},
 				{Key: "1–5", Desc: "jump to tab"},
+				{Key: "^L", Desc: "login (when logged out)"},
+				{Key: "^O", Desc: "logout (when logged in)"},
+				{Key: "P", Desc: "switch profile"},
 				{Key: "?", Desc: "toggle help"},
 				{Key: "L", Desc: "toggle command log"},
 				{Key: "^Q", Desc: "quit"},
@@ -132,7 +147,7 @@ func NewApp(db *sql.DB, dbPath, version string) App {
 				{Key: "Enter", Desc: "open menu"},
 				{Key: "^N", Desc: "new node"},
 				{Key: "^D", Desc: "delete"},
-				{Key: "^O", Desc: "toggle offline"},
+				{Key: "Enter", Desc: "menu → toggle offline"},
 				{Key: "r", Desc: "refresh"},
 			},
 			{
@@ -165,6 +180,24 @@ func (a *App) rebuildTabs(isOC bool) {
 		}
 		a.tabs = append(a.tabs, name)
 		a.tabMap = append(a.tabMap, i)
+	}
+}
+
+// loadSessionInfo re-reads the active session + controller into the header
+// state. Called on startup and after login/logout/profile switch.
+func (a *App) loadSessionInfo() {
+	a.profile = controller.GetActiveProfileName(a.db)
+	if sess, err := session.LoadSession(a.db, a.dbPath); err == nil {
+		a.loggedIn = true
+		a.username = sess.Profile.Username
+	} else {
+		a.loggedIn = false
+		a.username = ""
+	}
+	if name, _, ok := controller.GetActiveController(a.db); ok {
+		a.activeCtrl = name
+	} else {
+		a.activeCtrl = ""
 	}
 }
 
@@ -207,6 +240,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.help.Width = msg.Width
 		a.cmdLog.Width = msg.Width
 		a.toast.Width = msg.Width
+		a.form.SetWidth(msg.Width)
+		a.confirm.SetWidth(msg.Width)
 		a.jobScreen, _ = a.jobScreen.Update(msg)
 		a.nodeScreen, _ = a.nodeScreen.Update(msg)
 		a.credScreen, _ = a.credScreen.Update(msg)
@@ -215,6 +250,17 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case tea.KeyMsg:
+		// App-level modals capture all keys while visible.
+		if a.form.Visible() {
+			var cmd tea.Cmd
+			a.form, cmd = a.form.Update(msg)
+			return a, cmd
+		}
+		if a.confirm.Visible() {
+			var cmd tea.Cmd
+			a.confirm, cmd = a.confirm.Update(msg)
+			return a, cmd
+		}
 		captured := a.activeInputCaptured()
 		if !captured {
 			switch msg.String() {
@@ -226,6 +272,27 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return a, nil
 			case "L":
 				a.cmdLog.Toggle()
+				return a, nil
+			case "ctrl+l":
+				if !a.loggedIn {
+					a.form.Show("login", "Login to CloudBees", []components.FormField{
+						{Name: "url", Label: "Server URL", Required: true},
+						{Name: "username", Label: "Username", Required: true},
+						{Name: "token", Label: "API Token", Required: true, Password: true},
+					})
+				}
+				return a, nil
+			case "P":
+				return a.openSwitchProfile()
+			case "ctrl+o":
+				if a.loggedIn {
+					a.pendingLogout = a.profile
+					who := a.username
+					if who != "" {
+						who = " " + who
+					}
+					a.confirm.Show("Log out", fmt.Sprintf("Log out%s? You'll need your API token to log back in.", who))
+				}
 				return a, nil
 			case "tab", "right":
 				a.activeTab = (a.activeTab + 1) % len(a.tabs)
@@ -248,6 +315,25 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 		return a.delegateKey(msg)
+	}
+
+	// App-level modal results — handled here, never fanned out to screens.
+	switch m := msg.(type) {
+	case components.FormResultMsg:
+		return a.handleFormResult(m)
+	case components.ConfirmResultMsg:
+		if a.pendingLogout != "" {
+			profile := a.pendingLogout
+			a.pendingLogout = ""
+			if !m.Yes {
+				return a, nil
+			}
+			if err := auth.Logout(a.db, profile); err != nil {
+				return a, a.toast.ShowError(err.Error())
+			}
+			a.loadSessionInfo()
+			return a, tea.Batch(a.toast.ShowSuccess(theme.SymOK+" Logged out"), a.reloadScreens())
+		}
 	}
 
 	// Route non-key messages to all screens (async fetches) and app-level components.
@@ -288,6 +374,88 @@ func (a App) delegateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return a, cmd
 }
 
+// openSwitchProfile opens the profile-picker modal, or toasts when there is
+// nothing to switch to (only the current profile is logged in).
+func (a App) openSwitchProfile() (tea.Model, tea.Cmd) {
+	if !a.loggedIn {
+		return a, nil
+	}
+	profiles, _ := session.ListProfiles(a.db)
+	var names []string
+	for _, p := range profiles {
+		if session.HasToken(a.db, p.Name) {
+			names = append(names, p.Name)
+		}
+	}
+	if len(names) <= 1 {
+		return a, a.toast.ShowInfo("Only one profile")
+	}
+	a.form.Show("switch-profile", "Switch Profile", []components.FormField{
+		{Name: "profile", Label: "Profile", Value: a.profile, Options: names},
+	})
+	return a, nil
+}
+
+// handleFormResult dispatches on which app-level form modal just closed.
+func (a App) handleFormResult(m components.FormResultMsg) (tea.Model, tea.Cmd) {
+	if m.Canceled {
+		return a, nil
+	}
+	vals := map[string]string{}
+	for i, name := range m.Names {
+		if i < len(m.Values) {
+			vals[name] = m.Values[i]
+		}
+	}
+	switch m.ID {
+	case "login":
+		url, user, token := strings.TrimSpace(vals["url"]), strings.TrimSpace(vals["username"]), vals["token"]
+		if url == "" || user == "" || token == "" {
+			return a, a.toast.ShowError("URL, username, and token are required")
+		}
+		if err := auth.Login(a.db, a.dbPath, url, user, token, "default", false); err != nil {
+			return a, a.toast.ShowError(err.Error())
+		}
+		a.loadSessionInfo()
+		return a, tea.Batch(a.toast.ShowSuccess(theme.SymOK+" Logged in as "+user), a.reloadScreens())
+	case "switch-profile":
+		name := vals["profile"]
+		if name == "" || name == a.profile {
+			return a, nil
+		}
+		if err := auth.SwitchProfile(a.db, name); err != nil {
+			return a, a.toast.ShowError(err.Error())
+		}
+		a.loadSessionInfo()
+		return a, tea.Batch(a.toast.ShowSuccess(theme.SymArrow+" Switched to "+name), a.reloadScreens())
+	}
+	return a, nil
+}
+
+// reloadScreens re-fires every screen's initial fetch so their data reflects
+// the newly-active session/profile. Returns a batched command.
+func (a *App) reloadScreens() tea.Cmd {
+	a.ctrlScreen = screens.NewControllerScreen(a.db, a.dbPath, a.activeCtrl)
+	a.jobScreen = screens.NewJobScreen(a.db, a.dbPath)
+	a.nodeScreen = screens.NewNodeScreen(a.db, a.dbPath)
+	a.credScreen = screens.NewCredScreen(a.db, a.dbPath)
+	// Fresh screens start at width 0 — re-apply the current terminal size.
+	if a.width > 0 {
+		sz := tea.WindowSizeMsg{Width: a.width, Height: a.height}
+		a.jobScreen, _ = a.jobScreen.Update(sz)
+		a.nodeScreen, _ = a.nodeScreen.Update(sz)
+		a.credScreen, _ = a.credScreen.Update(sz)
+		a.ctrlScreen, _ = a.ctrlScreen.Update(sz)
+	}
+	return tea.Batch(
+		detectServerType(a.db, a.dbPath),
+		a.jobScreen.Init(),
+		a.nodeScreen.Init(),
+		a.credScreen.Init(),
+		a.ctrlScreen.Init(),
+	)
+}
+
 // View renders the full TUI.
 func (a App) View() string {
 	if a.quitting {
@@ -296,8 +464,8 @@ func (a App) View() string {
 
 	var sb strings.Builder
 
-	// Tab bar.
-	sb.WriteString(renderTabBar(a.tabs, a.activeTab, a.width))
+	// Tab bar with the session header on the right.
+	sb.WriteString(renderTabBar(a.tabs, a.activeTab, a.width, a.headerLabel()))
 	sb.WriteString("\n")
 
 	// Separator.
@@ -315,6 +483,18 @@ func (a App) View() string {
 	}
 
 	// Overlays take priority over the screen body when visible.
+	if v := a.form.View(); v != "" {
+		sb.WriteString(v)
+		sb.WriteString("\n")
+		sb.WriteString(renderStatusBar(a.allTabIndex(), a.width))
+		return sb.String()
+	}
+	if v := a.confirm.View(); v != "" {
+		sb.WriteString(v)
+		sb.WriteString("\n")
+		sb.WriteString(renderStatusBar(a.allTabIndex(), a.width))
+		return sb.String()
+	}
 	if v := a.help.View(); v != "" {
 		sb.WriteString(v)
 		sb.WriteString("\n")
@@ -362,7 +542,19 @@ func (a App) activeScreenView() string {
 	return ""
 }
 
-func renderTabBar(tabs []string, active, width int) string {
+// headerLabel returns the right-side session indicator: "user@controller" when
+// logged in (controller optional), else "not logged in".
+func (a App) headerLabel() string {
+	if !a.loggedIn {
+		return "not logged in"
+	}
+	if a.activeCtrl != "" {
+		return a.username + "@" + a.activeCtrl
+	}
+	return a.username
+}
+
+func renderTabBar(tabs []string, active, width int, header string) string {
 	var parts []string
 	for i, name := range tabs {
 		num := fmt.Sprintf("%d:", i+1)
@@ -373,9 +565,16 @@ func renderTabBar(tabs []string, active, width int) string {
 		}
 	}
 	bar := "  " + strings.Join(parts, "  ")
-	visLen := lipgloss.Width(bar)
-	if width > visLen {
-		bar += strings.Repeat(" ", width-visLen)
+	rendered := theme.StyleDim.Render(header)
+	// Right-align the header: pad the gap between tabs and header, leaving a
+	// 1-col trailing margin. Falls back to a single space when the row is tight.
+	gap := width - lipgloss.Width(bar) - lipgloss.Width(rendered) - 1
+	if gap < 1 {
+		gap = 1
+	}
+	bar += strings.Repeat(" ", gap) + rendered + " "
+	if pad := width - lipgloss.Width(bar); pad > 0 {
+		bar += strings.Repeat(" ", pad)
 	}
 	return lipgloss.NewStyle().
 		Background(lipgloss.Color(theme.ColorHeaderBg)).
@@ -403,7 +602,6 @@ func renderStatusBar(activeTab, width int) string {
 			theme.StyleKeyHint.Render("Enter")+theme.StyleDim.Render(" menu"),
 			theme.StyleKeyHint.Render("^N")+theme.StyleDim.Render(" new"),
 			theme.StyleKeyHint.Render("^D")+theme.StyleDim.Render(" delete"),
-			theme.StyleKeyHint.Render("^O")+theme.StyleDim.Render(" offline"),
 			theme.StyleKeyHint.Render("r")+theme.StyleDim.Render(" refresh"),
 		)
 	case 2: // Credentials
