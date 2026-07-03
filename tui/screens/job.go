@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -27,8 +28,9 @@ type jobEntry struct {
 }
 
 type jobsLoaded struct {
-	jobs []jobEntry
-	err  error
+	jobs   []jobEntry
+	folder string // which folder these jobs belong to (empty = root)
+	err    error
 }
 
 type jobOpDone struct {
@@ -50,6 +52,29 @@ type configLoaded struct {
 	summary jobo.ConfigSummary
 	err     error
 }
+
+// buildHistoryLoaded carries build numbers for the log viewer's [/] nav.
+type buildHistoryLoaded struct {
+	jobName string
+	nums    []int // sorted descending
+}
+
+// logChunkLoaded carries one progressive log poll result.
+type logChunkLoaded struct {
+	text      string
+	newOffset int64
+	hasMore   bool
+	err       error
+}
+
+// scriptLoaded carries a fetched pipeline script.
+type scriptLoaded struct {
+	script string
+	err    error
+}
+
+// autoRefreshMsg is the tick for the job screen's auto-refresh.
+type jobAutoRefreshMsg struct{}
 
 // ── form (multi-field inline text entry) ─────────────────────────────────────
 
@@ -337,15 +362,24 @@ type JobScreen struct {
 	width   int
 	height  int
 
+	// folder drill-down — folderStack[len-1] is the current folder, empty = root
+	folderStack []string
+
+	// auto-refresh ticker
+	autoRefresh    bool
+	autoRefreshCmd tea.Cmd
+
 	// overlay state — exactly one active at a time; priority in View()
-	menu     menuOverlay
-	form     formOverlay
-	schedule components.ScheduleBuilder
-	email    components.EmailBuilder
-	params   components.ParamListEditor
-	agents   components.GrantListOverlay
-	confirm  components.ConfirmModal
-	message  components.MessageModal
+	menu       menuOverlay
+	form       formOverlay
+	schedule   components.ScheduleBuilder
+	email      components.EmailBuilder
+	params     components.ParamListEditor
+	agents     components.GrantListOverlay
+	confirm    components.ConfirmModal
+	message    components.MessageModal
+	logViewer  components.LogViewer
+	scriptView components.ScriptViewer
 
 	// context carrying which job an overlay is operating on
 	activeJob     string
@@ -360,11 +394,14 @@ type JobScreen struct {
 	nodeNames []string
 
 	// "what did the form submission mean?"
-	formIntent string // "create-freestyle","create-pipeline","create-folder","edit-freestyle","edit-pipeline","add-agent"
+	formIntent string // "create-freestyle","create-pipeline","create-folder","edit-freestyle","edit-pipeline","add-agent","move","clone"
 
 	// detail panel: config summary for the highlighted job (fetch-on-cursor-move)
 	detailSummary      *jobo.ConfigSummary
 	detailSummaryCache map[string]jobo.ConfigSummary
+
+	// log viewer: progressive polling offset
+	logOffset int64
 }
 
 // NewJobScreen constructs a JobScreen.
@@ -396,32 +433,53 @@ func (s JobScreen) Init() tea.Cmd {
 func (s JobScreen) InputCaptured() bool {
 	return s.schedule.Visible() || s.email.Visible() || s.params.Visible() ||
 		s.agents.Visible() || s.form.Visible() || s.menu.Visible() ||
-		s.confirm.Visible() || s.message.Visible() || s.search.Editing()
+		s.confirm.Visible() || s.message.Visible() || s.search.Editing() ||
+		s.logViewer.Visible() || s.scriptView.Visible()
 }
 
 // ── data fetches ──────────────────────────────────────────────────────────────
 
 func (s JobScreen) fetchJobs() tea.Cmd {
 	db, dbPath := s.db, s.dbPath
+	folder := s.currentFolder()
 	return func() tea.Msg {
 		client, err := controller.GetActiveControllerClient(db, dbPath)
 		if err != nil {
-			return jobsLoaded{err: err}
+			return jobsLoaded{err: err, folder: folder}
 		}
-		jobs, err := jobo.ListJobs(context.Background(), db, client)
+		var rawJobs []jobo.JobDTO
+		if folder == "" {
+			rawJobs, err = jobo.ListJobs(context.Background(), db, client)
+		} else {
+			rawJobs, err = jobo.ListJobsInFolder(context.Background(), client, folder)
+		}
 		if err != nil {
-			return jobsLoaded{err: err}
+			return jobsLoaded{err: err, folder: folder}
 		}
-		entries := make([]jobEntry, 0, len(jobs))
-		for _, j := range jobs {
+		entries := make([]jobEntry, 0, len(rawJobs))
+		for _, j := range rawJobs {
 			e := jobEntry{Name: j.Name, Class: j.Class, Color: j.Color, Desc: j.Description}
 			if j.LastBuild != nil {
 				e.Build = j.LastBuild.Number
 			}
 			entries = append(entries, e)
 		}
-		return jobsLoaded{jobs: entries}
+		return jobsLoaded{jobs: entries, folder: folder}
 	}
+}
+
+// currentFolder returns the folder currently being viewed ("" = root).
+func (s JobScreen) currentFolder() string {
+	if len(s.folderStack) == 0 {
+		return ""
+	}
+	return s.folderStack[len(s.folderStack)-1]
+}
+
+func (s JobScreen) autoRefreshID() int { return 0 }
+
+func (s JobScreen) scheduleAutoRefresh() tea.Cmd {
+	return tea.Tick(10*time.Second, func(_ time.Time) tea.Msg { return jobAutoRefreshMsg{} })
 }
 
 func (s JobScreen) fetchNodes() tea.Cmd {
@@ -678,6 +736,88 @@ func (s JobScreen) doRevokeAgent(folderName, grantID string) tea.Cmd {
 	}
 }
 
+func (s JobScreen) fetchBuildHistory(name string) tea.Cmd {
+	db, dbPath := s.db, s.dbPath
+	return func() tea.Msg {
+		client, err := controller.GetActiveControllerClient(db, dbPath)
+		if err != nil {
+			return buildHistoryLoaded{jobName: name}
+		}
+		hist, err := jobo.GetBuildHistory(context.Background(), client, name, 20)
+		if err != nil || len(hist) == 0 {
+			return buildHistoryLoaded{jobName: name}
+		}
+		nums := make([]int, len(hist))
+		for i, b := range hist {
+			nums[i] = b.Number
+		}
+		// sort descending (GetBuildHistory returns newest-first already, but ensure)
+		for i := 0; i < len(nums)-1; i++ {
+			for j := i + 1; j < len(nums); j++ {
+				if nums[j] > nums[i] {
+					nums[i], nums[j] = nums[j], nums[i]
+				}
+			}
+		}
+		return buildHistoryLoaded{jobName: name, nums: nums}
+	}
+}
+
+func (s JobScreen) fetchLogChunk(name string, buildNum int, offset int64) tea.Cmd {
+	db, dbPath := s.db, s.dbPath
+	return func() tea.Msg {
+		client, err := controller.GetActiveControllerClient(db, dbPath)
+		if err != nil {
+			return logChunkLoaded{err: err}
+		}
+		var text string
+		var newOffset int64
+		var hasMore bool
+		if buildNum == 0 {
+			text, newOffset, hasMore, err = jobo.StreamLastBuildLog(context.Background(), client, name, offset)
+		} else {
+			text, newOffset, hasMore, err = jobo.StreamBuildLog(context.Background(), client, name, buildNum, offset)
+		}
+		return logChunkLoaded{text: text, newOffset: newOffset, hasMore: hasMore, err: err}
+	}
+}
+
+func (s JobScreen) fetchScript(name string) tea.Cmd {
+	db, dbPath := s.db, s.dbPath
+	return func() tea.Msg {
+		client, err := controller.GetActiveControllerClient(db, dbPath)
+		if err != nil {
+			return scriptLoaded{err: err}
+		}
+		script, err := jobo.GetPipelineScript(context.Background(), client, name)
+		return scriptLoaded{script: script, err: err}
+	}
+}
+
+func (s JobScreen) doMove(src, dst string) tea.Cmd {
+	db, dbPath := s.db, s.dbPath
+	return func() tea.Msg {
+		client, err := controller.GetActiveControllerClient(db, dbPath)
+		if err != nil {
+			return jobOpDone{label: "move", err: err}
+		}
+		err = jobo.MoveJob(context.Background(), client, src, dst)
+		return jobOpDone{label: "move " + src + " → " + dst, err: err}
+	}
+}
+
+func (s JobScreen) doClone(src, dst string) tea.Cmd {
+	db, dbPath := s.db, s.dbPath
+	return func() tea.Msg {
+		client, err := controller.GetActiveControllerClient(db, dbPath)
+		if err != nil {
+			return jobOpDone{label: "clone", err: err}
+		}
+		err = jobo.CopyJob(context.Background(), client, src, dst)
+		return jobOpDone{label: "clone " + src + " → " + dst, err: err}
+	}
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 func typeLabel(class string) string { return jobo.JobType(class) }
@@ -696,7 +836,7 @@ func (s JobScreen) filteredJobs() []jobEntry {
 	return out
 }
 
-func buildJobRows(jobs []jobEntry) ([][]components.Cell, []string) {
+func buildJobRows(jobs []jobEntry, currentFolder string) ([][]components.Cell, []string) {
 	rows := make([][]components.Cell, len(jobs))
 	keys := make([]string, len(jobs))
 	for i, j := range jobs {
@@ -707,15 +847,24 @@ func buildJobRows(jobs []jobEntry) ([][]components.Cell, []string) {
 		}
 		typ := typeLabel(j.Class)
 		typColor := ""
-		if typ == "FD" {
+		if typ == "FD" || typ == "MB" {
 			typColor = theme.ColorYellow
 		} else if typ == "PL" {
 			typColor = theme.ColorBlue
 		}
+		// strip folder prefix so only the leaf name shows in the table
+		leafName := j.Name
+		if currentFolder != "" && strings.HasPrefix(j.Name, currentFolder+"/") {
+			leafName = j.Name[len(currentFolder)+1:]
+		}
+		// mark folders/multibranch as drillable
+		if typ == "FD" || typ == "MB" {
+			leafName = leafName + "/ " + theme.SymArrow
+		}
 		rows[i] = []components.Cell{
 			{Text: label, Color: col},
 			{Text: typ, Color: typColor},
-			{Text: j.Name},
+			{Text: leafName},
 			{Text: build},
 			{Text: j.Desc, Dim: true},
 		}
@@ -729,6 +878,22 @@ func maxInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// strGet returns vals[i] trimmed, or "" if out of range.
+func strGet(vals []string, i int) string {
+	if i < len(vals) {
+		return strings.TrimSpace(vals[i])
+	}
+	return ""
+}
+
+// strGetDef returns vals[i] trimmed, or def if out of range or empty.
+func strGetDef(vals []string, i int, def string) string {
+	if v := strGet(vals, i); v != "" {
+		return v
+	}
+	return def
 }
 
 // current returns the job entry at the table cursor, or nil.
@@ -809,6 +974,27 @@ func (s JobScreen) openMenu(name, typ string) JobScreen {
 // Update handles messages and keyboard input.
 func (s JobScreen) Update(msg tea.Msg) (JobScreen, tea.Cmd) {
 	// ── overlay priority — highest first ───────────────────────────────────
+
+	// Log viewer and script viewer take absolute priority.
+	if s.logViewer.Visible() {
+		var cmd tea.Cmd
+		s.logViewer, cmd = s.logViewer.Update(msg)
+		if _, ok := msg.(components.LogViewerResult); ok {
+			s.logOffset = 0
+		}
+		return s, cmd
+	}
+	if s.scriptView.Visible() {
+		var cmd tea.Cmd
+		s.scriptView, cmd = s.scriptView.Update(msg)
+		return s, cmd
+	}
+
+	// Auto-refresh tick
+	if _, ok := msg.(jobAutoRefreshMsg); ok && s.autoRefresh {
+		return s, tea.Batch(s.fetchJobs(), s.scheduleAutoRefresh())
+	}
+
 	if s.schedule.Visible() {
 		var cmd tea.Cmd
 		s.schedule, cmd = s.schedule.Update(msg)
@@ -936,7 +1122,7 @@ func (s JobScreen) Update(msg tea.Msg) (JobScreen, tea.Cmd) {
 		prevQuery := s.search.Query()
 		s.search, cmd = s.search.Update(msg)
 		if s.search.Query() != prevQuery || !s.search.Editing() {
-			rows, keys := buildJobRows(s.filteredJobs())
+			rows, keys := buildJobRows(s.filteredJobs(), s.currentFolder())
 			s.table.SetRows(rows, keys)
 		}
 		return s, cmd
@@ -945,11 +1131,15 @@ func (s JobScreen) Update(msg tea.Msg) (JobScreen, tea.Cmd) {
 	// ── async results ──────────────────────────────────────────────────────
 	switch msg := msg.(type) {
 	case jobsLoaded:
+		// Discard stale results from a previous folder.
+		if msg.folder != s.currentFolder() {
+			return s, nil
+		}
 		s.loading = false
 		s.err = msg.err
 		if msg.err == nil {
 			s.jobs = msg.jobs
-			rows, keys := buildJobRows(s.filteredJobs())
+			rows, keys := buildJobRows(s.filteredJobs(), s.currentFolder())
 			s.table.SetRows(rows, keys)
 		}
 		return s, s.maybeFetchDetail()
@@ -985,6 +1175,42 @@ func (s JobScreen) Update(msg tea.Msg) (JobScreen, tea.Cmd) {
 			if c := s.current(); c != nil && c.Name == msg.name {
 				s.detailSummary = &sum
 			}
+		}
+		return s, nil
+
+	case buildHistoryLoaded:
+		if s.logViewer.Visible() && s.logViewer.JobName == msg.jobName {
+			s.logViewer.BuildNums = msg.nums
+		}
+		return s, nil
+
+	case logChunkLoaded:
+		if !s.logViewer.Visible() {
+			return s, nil
+		}
+		if msg.err != nil {
+			s.logViewer.Status = "error: " + msg.err.Error()
+			return s, nil
+		}
+		if msg.text != "" {
+			rawLines := strings.Split(strings.TrimRight(msg.text, "\n"), "\n")
+			lines := make([]components.LogLine, len(rawLines))
+			for i, l := range rawLines {
+				lines[i] = components.LogLine{Text: l, Color: components.ColorForLogLine(l)}
+			}
+			s.logViewer.AppendLines(lines)
+		}
+		s.logOffset = msg.newOffset
+		if msg.hasMore {
+			s.logViewer.Status = "streaming…"
+			return s, s.fetchLogChunk(s.logViewer.JobName, s.logViewer.BuildNum, s.logOffset)
+		}
+		s.logViewer.Status = "finished"
+		return s, nil
+
+	case scriptLoaded:
+		if s.scriptView.Visible() {
+			s.scriptView.SetScript(msg.script, msg.err)
 		}
 		return s, nil
 
@@ -1025,6 +1251,8 @@ func (s JobScreen) Update(msg tea.Msg) (JobScreen, tea.Cmd) {
 		s.email.Width = msg.Width
 		s.params.Width = msg.Width
 		s.agents.Width = msg.Width
+		s.logViewer.SetSize(msg.Width, msg.Height)
+		s.scriptView.SetSize(msg.Width, msg.Height)
 		return s, nil
 	}
 
@@ -1034,11 +1262,35 @@ func (s JobScreen) Update(msg tea.Msg) (JobScreen, tea.Cmd) {
 		case "/":
 			s.search.Open()
 			return s, nil
+		case "backspace":
+			// drill back up one folder level
+			if len(s.folderStack) > 0 {
+				s.folderStack = s.folderStack[:len(s.folderStack)-1]
+				s.jobs = nil
+				s.loading = true
+				s.search = components.SearchBox{}
+				return s, s.fetchJobs()
+			}
+			return s, nil
+		case "f":
+			s.autoRefresh = !s.autoRefresh
+			if s.autoRefresh {
+				return s, s.scheduleAutoRefresh()
+			}
+			return s, nil
 		case "enter":
 			name := s.selectedJobName()
 			typ := s.selectedJobType()
 			if name == "" {
 				return s, nil
+			}
+			// Drill into folders/multibranch instead of opening the menu.
+			if typ == "FD" || typ == "MB" {
+				s.folderStack = append(s.folderStack, name)
+				s.jobs = nil
+				s.loading = true
+				s.search = components.SearchBox{}
+				return s, s.fetchJobs()
 			}
 			s = s.openMenu(name, typ)
 			return s, nil
@@ -1105,12 +1357,16 @@ func (s JobScreen) handleMenuAction(act jobAction) (JobScreen, tea.Cmd) {
 	switch act {
 	case actViewLog:
 		s.menu.Hide()
-		s.message.Show("Log: "+name, "Log viewing not yet implemented in TUI. Use: bee job log "+name)
-		return s, nil
+		s.logViewer.Show(name)
+		s.logOffset = 0
+		return s, tea.Batch(
+			s.fetchLogChunk(name, 0, 0),
+			s.fetchBuildHistory(name),
+		)
 	case actViewScript:
 		s.menu.Hide()
-		s.message.Show("Script: "+name, "Script viewing not yet implemented in TUI. Use: bee job get "+name)
-		return s, nil
+		s.scriptView.Show(name)
+		return s, s.fetchScript(name)
 	case actRun:
 		s.menu.Hide()
 		return s, s.doRun(name)
@@ -1153,11 +1409,17 @@ func (s JobScreen) handleMenuAction(act jobAction) (JobScreen, tea.Cmd) {
 		return s, nil
 	case actMove:
 		s.menu.Hide()
-		s.message.Show("Move", "Move not yet implemented in TUI. Use: bee job move "+name)
+		s.formIntent = "move"
+		s.form.Show("Move: "+name, []formField{
+			{Label: "Destination", Placeholder: "folder/newname", Required: true},
+		})
 		return s, nil
 	case actClone:
 		s.menu.Hide()
-		s.message.Show("Clone", "Clone not yet implemented in TUI. Use: bee job clone "+name)
+		s.formIntent = "clone"
+		s.form.Show("Clone: "+name, []formField{
+			{Label: "New name", Placeholder: name+"-copy", Required: true},
+		})
 		return s, nil
 	case actAgents:
 		s.menu.Hide()
@@ -1330,6 +1592,16 @@ func (s JobScreen) handleFormSubmit(vals []string) tea.Cmd {
 			return nil
 		}
 		return s.doAddAgent(s.agentFolder, strings.TrimSpace(vals[0]))
+	case "move":
+		if len(vals) < 1 || strings.TrimSpace(vals[0]) == "" {
+			return nil
+		}
+		return s.doMove(s.activeJob, strings.TrimSpace(vals[0]))
+	case "clone":
+		if len(vals) < 1 || strings.TrimSpace(vals[0]) == "" {
+			return nil
+		}
+		return s.doClone(s.activeJob, strings.TrimSpace(vals[0]))
 	}
 	return nil
 }
@@ -1339,6 +1611,12 @@ func (s JobScreen) handleFormSubmit(vals []string) tea.Cmd {
 // View renders the job screen.
 func (s JobScreen) View() string {
 	// overlay priority (first visible wins)
+	if s.logViewer.Visible() {
+		return s.logViewer.View()
+	}
+	if s.scriptView.Visible() {
+		return s.scriptView.View()
+	}
 	if s.schedule.Visible() {
 		return s.schedule.View()
 	}
@@ -1364,8 +1642,18 @@ func (s JobScreen) View() string {
 		return s.message.View()
 	}
 
+	// breadcrumb header
+	title := theme.SymGear + " Jobs"
+	if len(s.folderStack) > 0 {
+		crumb := " › " + strings.Join(s.folderStack, " › ")
+		title += theme.StyleDim.Render(crumb) + theme.StyleDim.Render("  ↤ Backspace")
+	}
+	if s.autoRefresh {
+		title += theme.StyleDim.Render("  [auto]")
+	}
+
 	var sb strings.Builder
-	sb.WriteString(theme.StyleTitle.Render(theme.SymGear+" Jobs") + "\n")
+	sb.WriteString(theme.StyleTitle.Render(title) + "\n")
 	if s.loading {
 		sb.WriteString(theme.StyleDim.Render(theme.SymLoading + " Loading jobs..."))
 		return sb.String()
@@ -1411,6 +1699,6 @@ func (s JobScreen) View() string {
 		}
 	}
 
-	sb.WriteString(theme.StyleDim.Render("Enter menu  ·  ↑↓ move  ·  Ctrl+n new  ·  Ctrl+d delete  ·  A agents(FD)  ·  r refresh  ·  / search"))
+	sb.WriteString(theme.StyleDim.Render("Enter drill/menu  ·  ↑↓ move  ·  ⌫ up  ·  Ctrl+n new  ·  Ctrl+d delete  ·  A agents(FD)  ·  f auto  ·  r refresh  ·  / search"))
 	return sb.String()
 }

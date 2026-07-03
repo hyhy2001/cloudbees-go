@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -15,7 +16,9 @@ import (
 	"bee/tui/theme"
 )
 
-// credEntry is a single credential row.
+// credAutoRefreshMsg is the tick for the cred screen's auto-refresh.
+type credAutoRefreshMsg struct{}
+
 type credEntry struct {
 	ID          string
 	TypeName    string
@@ -29,7 +32,10 @@ type credsLoaded struct {
 	err      error
 }
 
-type credActionDone struct{ err error }
+type credActionDone struct {
+	label string
+	err   error
+}
 
 // credConfigLoaded carries the fetched username for the highlighted
 // credential's detail panel (fetch-on-cursor-move, cached by caller).
@@ -47,6 +53,8 @@ type CredScreen struct {
 	search   components.SearchBox
 	modal    components.ConfirmModal
 	detail   components.MessageModal
+	form     formOverlay
+	menu     menuOverlay
 	loading  bool
 	err      error
 	creds    []credEntry
@@ -54,6 +62,12 @@ type CredScreen struct {
 	width    int
 	height   int
 	pending  string // ID being acted on
+	activeID string // ID currently in context (for edit)
+
+	autoRefresh bool
+
+	// form intent: "create-up", "create-st", "edit"
+	credFormIntent string
 
 	// detail panel: username fetched from the highlighted credential's config.xml
 	credUsername      string
@@ -87,7 +101,8 @@ func (s CredScreen) Init() tea.Cmd {
 // box is currently capturing input, meaning this screen wants raw keys routed
 // to it instead of being intercepted by the app shell for tab-switching/quit.
 func (s CredScreen) InputCaptured() bool {
-	return s.modal.Visible() || s.detail.Visible() || s.search.Editing()
+	return s.modal.Visible() || s.detail.Visible() || s.search.Editing() ||
+		s.form.Visible() || s.menu.Visible()
 }
 
 func (s CredScreen) fetchCreds() tea.Cmd {
@@ -119,16 +134,40 @@ func (s CredScreen) fetchCreds() tea.Cmd {
 }
 
 func (s CredScreen) doDeleteCred(id string) tea.Cmd {
-	db, dbPath, store := s.db, s.dbPath, s.store
+	db, dbPath, store, username := s.db, s.dbPath, s.store, s.username
 	return func() tea.Msg {
 		client, err := controller.GetActiveControllerClient(db, dbPath)
 		if err != nil {
-			return credActionDone{err: err}
+			return credActionDone{label: "delete", err: err}
 		}
-		if err := credpkg.DeleteCredential(context.Background(), client, id, "", store); err != nil {
-			return credActionDone{err: err}
+		if err := credpkg.DeleteCredential(context.Background(), client, id, username, store); err != nil {
+			return credActionDone{label: "delete", err: err}
 		}
-		return credActionDone{}
+		return credActionDone{label: "delete " + id}
+	}
+}
+
+func (s CredScreen) doCreateUP(id, user, pass, desc string) tea.Cmd {
+	db, dbPath, store, sessUser := s.db, s.dbPath, s.store, s.username
+	return func() tea.Msg {
+		client, err := controller.GetActiveControllerClient(db, dbPath)
+		if err != nil {
+			return credActionDone{label: "create", err: err}
+		}
+		err = credpkg.CreateUsernamePasswordCredential(context.Background(), client, id, user, pass, desc, "GLOBAL", store, sessUser)
+		return credActionDone{label: "create " + id, err: err}
+	}
+}
+
+func (s CredScreen) doCreateST(id, secret, desc string) tea.Cmd {
+	db, dbPath, store, sessUser := s.db, s.dbPath, s.store, s.username
+	return func() tea.Msg {
+		client, err := controller.GetActiveControllerClient(db, dbPath)
+		if err != nil {
+			return credActionDone{label: "create", err: err}
+		}
+		err = credpkg.CreateSecretTextCredential(context.Background(), client, id, secret, desc, "GLOBAL", store, sessUser)
+		return credActionDone{label: "create " + id, err: err}
 	}
 }
 
@@ -191,6 +230,26 @@ func (s CredScreen) current() *credEntry {
 
 // Update handles messages and key input.
 func (s CredScreen) Update(msg tea.Msg) (CredScreen, tea.Cmd) {
+	if s.form.Visible() {
+		var cmd tea.Cmd
+		s.form, cmd = s.form.Update(msg)
+		switch msg.(type) {
+		case FormSubmitMsg:
+			res := msg.(FormSubmitMsg)
+			return s, tea.Batch(cmd, s.handleCredFormSubmit(res.Values))
+		case FormCancelMsg:
+			s.credFormIntent = ""
+		}
+		return s, cmd
+	}
+	if s.menu.Visible() {
+		var cmd tea.Cmd
+		s.menu, cmd = s.menu.Update(msg)
+		if sel, ok := msg.(MenuSelectMsg); ok {
+			return s.handleCredMenuSelect(sel.Index)
+		}
+		return s, cmd
+	}
 	if s.modal.Visible() {
 		var cmd tea.Cmd
 		s.modal, cmd = s.modal.Update(msg)
@@ -235,9 +294,11 @@ func (s CredScreen) Update(msg tea.Msg) (CredScreen, tea.Cmd) {
 		if msg.err != nil {
 			s.detail.Show("Error", msg.err.Error())
 		} else {
-			s.detail.Show("Deleted", fmt.Sprintf("Credential '%s' deleted.", s.pending))
-			delete(s.credUsernameCache, s.pending)
-			s.pending = ""
+			s.detail.Show("Done", msg.label+" succeeded.")
+			if strings.HasPrefix(msg.label, "delete") {
+				delete(s.credUsernameCache, s.pending)
+				s.pending = ""
+			}
 			return s, s.fetchCreds()
 		}
 		return s, nil
@@ -255,6 +316,8 @@ func (s CredScreen) Update(msg tea.Msg) (CredScreen, tea.Cmd) {
 		s.table.SetSize(msg.Width, maxInt(5, msg.Height-12))
 		s.modal.SetWidth(msg.Width)
 		s.detail.SetWidth(msg.Width)
+		s.form.width = msg.Width
+		s.menu.width = msg.Width
 		return s, nil
 
 	case tea.KeyMsg:
@@ -262,14 +325,29 @@ func (s CredScreen) Update(msg tea.Msg) (CredScreen, tea.Cmd) {
 		case "/":
 			s.search.Open()
 			return s, nil
+		case "enter":
+			if c := s.current(); c != nil {
+				s.activeID = c.ID
+				s.menu.Show("Credential: "+c.ID, []string{"Edit", "Delete"})
+			}
+			return s, nil
+		case "ctrl+n":
+			s.menu.Show("New Credential", []string{"Username + Password", "Secret Text"})
+			s.credFormIntent = "type-pick"
+			return s, nil
 		case "ctrl+d":
 			if c := s.current(); c != nil {
 				s.pending = c.ID
 				s.modal.Show("Delete credential", fmt.Sprintf("Delete credential '%s'? This cannot be undone.", c.ID))
 			}
 			return s, nil
+		case "f":
+			s.autoRefresh = !s.autoRefresh
+			if s.autoRefresh {
+				return s, credScheduleAutoRefresh()
+			}
+			return s, nil
 		case "S":
-			// Toggle store — server-side scope, so refetch.
 			if s.store == "system" {
 				s.store = "user"
 			} else {
@@ -284,6 +362,10 @@ func (s CredScreen) Update(msg tea.Msg) (CredScreen, tea.Cmd) {
 		}
 	}
 
+	if _, ok := msg.(credAutoRefreshMsg); ok && s.autoRefresh {
+		return s, tea.Batch(s.fetchCreds(), credScheduleAutoRefresh())
+	}
+
 	before := s.table.Cursor()
 	var cmd tea.Cmd
 	s.table, cmd = s.table.Update(msg)
@@ -291,6 +373,10 @@ func (s CredScreen) Update(msg tea.Msg) (CredScreen, tea.Cmd) {
 		return s, tea.Batch(cmd, s.maybeFetchDetail())
 	}
 	return s, cmd
+}
+
+func credScheduleAutoRefresh() tea.Cmd {
+	return tea.Tick(10*time.Second, func(_ time.Time) tea.Msg { return credAutoRefreshMsg{} })
 }
 
 // maybeFetchDetail serves the detail-panel username from cache, or kicks off
@@ -309,8 +395,106 @@ func (s *CredScreen) maybeFetchDetail() tea.Cmd {
 	return s.fetchCredConfig(c.ID)
 }
 
+func (s CredScreen) handleCredMenuSelect(idx int) (CredScreen, tea.Cmd) {
+	if s.credFormIntent == "type-pick" {
+		// idx 0=UP, 1=ST
+		s.credFormIntent = ""
+		if idx == 0 {
+			s.credFormIntent = "create-up"
+			s.form.Show("New Credential: Username+Password", []formField{
+				{Label: "ID", Placeholder: "my-cred-id"},
+				{Label: "Username", Required: true},
+				{Label: "Password", Required: true},
+				{Label: "Description"},
+			})
+		} else {
+			s.credFormIntent = "create-st"
+			s.form.Show("New Credential: Secret Text", []formField{
+				{Label: "ID", Placeholder: "my-secret-id"},
+				{Label: "Secret", Required: true},
+				{Label: "Description"},
+			})
+		}
+		return s, nil
+	}
+	// context menu for existing cred: 0=Edit, 1=Delete
+	switch idx {
+	case 0: // Edit
+		// For edit, show just description (we can't retrieve the secret/password)
+		s.credFormIntent = "edit"
+		s.form.Show("Edit: "+s.activeID, []formField{
+			{Label: "Description", Value: func() string {
+				if c := s.currentByID(s.activeID); c != nil {
+					return c.Description
+				}
+				return ""
+			}()},
+		})
+	case 1: // Delete
+		s.pending = s.activeID
+		s.modal.Show("Delete credential", fmt.Sprintf("Delete credential '%s'? This cannot be undone.", s.activeID))
+	}
+	return s, nil
+}
+
+func (s CredScreen) currentByID(id string) *credEntry {
+	for i := range s.creds {
+		if s.creds[i].ID == id {
+			return &s.creds[i]
+		}
+	}
+	return nil
+}
+
+func (s CredScreen) handleCredFormSubmit(vals []string) tea.Cmd {
+	intent := s.credFormIntent
+	s.credFormIntent = ""
+	switch intent {
+	case "create-up":
+		if len(vals) < 4 {
+			return nil
+		}
+		id, user, pass, desc := strings.TrimSpace(vals[0]), vals[1], vals[2], vals[3]
+		if id == "" {
+			id = user + "-cred"
+		}
+		return s.doCreateUP(id, user, pass, desc)
+	case "create-st":
+		if len(vals) < 3 {
+			return nil
+		}
+		id, secret, desc := strings.TrimSpace(vals[0]), vals[1], vals[2]
+		if id == "" {
+			id = "secret-text"
+		}
+		return s.doCreateST(id, secret, desc)
+	case "edit":
+		if len(vals) < 1 {
+			return nil
+		}
+		desc := vals[0]
+		db, dbPath, store, username := s.db, s.dbPath, s.store, s.username
+		id := s.activeID
+		return func() tea.Msg {
+			client, err := controller.GetActiveControllerClient(db, dbPath)
+			if err != nil {
+				return credActionDone{label: "edit", err: err}
+			}
+			err = credpkg.UpdateCredentialField(context.Background(), client, id, "description", desc, username, store)
+			return credActionDone{label: "edit " + id, err: err}
+		}
+	}
+	return nil
+}
+
 // View renders the credential screen.
 func (s CredScreen) View() string {
+	if s.form.Visible() {
+		return s.form.View()
+	}
+	if s.menu.Visible() {
+		return s.menu.View()
+	}
 	if s.modal.Visible() {
 		return s.modal.View()
 	}
@@ -363,6 +547,6 @@ func (s CredScreen) View() string {
 		sb.WriteString("\n")
 	}
 
-	sb.WriteString(theme.StyleDim.Render("↑↓ move  ·  ^D delete  ·  S store  ·  r refresh  ·  / search"))
+	sb.WriteString(theme.StyleDim.Render("Enter menu  ·  ↑↓ move  ·  ^N new  ·  ^D delete  ·  S store  ·  r refresh  ·  / search"))
 	return sb.String()
 }

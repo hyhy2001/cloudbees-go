@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -14,6 +15,9 @@ import (
 	"bee/tui/components"
 	"bee/tui/theme"
 )
+
+// nodeAutoRefreshMsg is the tick for the node screen's auto-refresh.
+type nodeAutoRefreshMsg struct{}
 
 // nodeEntry is a single node row.
 type nodeEntry struct {
@@ -30,7 +34,10 @@ type nodesLoaded struct {
 	err   error
 }
 
-type nodeActionDone struct{ err error }
+type nodeActionDone struct {
+	label string
+	err   error
+}
 
 // nodeConfigLoaded carries the parsed config.xml digest for the highlighted
 // node's detail panel (fetch-on-cursor-move, cached by caller).
@@ -48,6 +55,8 @@ type NodeScreen struct {
 	search  components.SearchBox
 	modal   components.ConfirmModal
 	detail  components.MessageModal
+	form    formOverlay
+	menu    menuOverlay
 	loading bool
 	err     error
 	nodes   []nodeEntry
@@ -55,6 +64,10 @@ type NodeScreen struct {
 	height  int
 	pending string // name of node targeted for action
 	action  string // "delete" | "toggle"
+	activeNode string // name being edited
+
+	autoRefresh    bool
+	nodeFormIntent string // "create" | "edit"
 
 	// detail panel: config.xml digest for the highlighted node
 	nodeConfig      *nodepkg.NodeConfig
@@ -84,11 +97,10 @@ func (s NodeScreen) Init() tea.Cmd {
 	return s.fetchNodes()
 }
 
-// InputCaptured reports whether the confirm modal, detail message, or search
-// box is currently capturing input, meaning this screen wants raw keys routed
-// to it instead of being intercepted by the app shell for tab-switching/quit.
+// InputCaptured reports whether any overlay is capturing input.
 func (s NodeScreen) InputCaptured() bool {
-	return s.modal.Visible() || s.detail.Visible() || s.search.Editing()
+	return s.modal.Visible() || s.detail.Visible() || s.search.Editing() ||
+		s.form.Visible() || s.menu.Visible()
 }
 
 func (s NodeScreen) fetchNodes() tea.Cmd {
@@ -122,12 +134,12 @@ func (s NodeScreen) doDeleteNode(name string) tea.Cmd {
 	return func() tea.Msg {
 		client, err := controller.GetActiveControllerClient(db, dbPath)
 		if err != nil {
-			return nodeActionDone{err: err}
+			return nodeActionDone{label: "delete", err: err}
 		}
 		if err := nodepkg.DeleteNode(context.Background(), client, name); err != nil {
-			return nodeActionDone{err: err}
+			return nodeActionDone{label: "delete", err: err}
 		}
-		return nodeActionDone{}
+		return nodeActionDone{label: "delete " + name}
 	}
 }
 
@@ -136,13 +148,45 @@ func (s NodeScreen) doToggleOffline(name string) tea.Cmd {
 	return func() tea.Msg {
 		client, err := controller.GetActiveControllerClient(db, dbPath)
 		if err != nil {
-			return nodeActionDone{err: err}
+			return nodeActionDone{label: "toggle", err: err}
 		}
 		if err := nodepkg.ToggleOffline(context.Background(), client, name, ""); err != nil {
-			return nodeActionDone{err: err}
+			return nodeActionDone{label: "toggle", err: err}
 		}
-		return nodeActionDone{}
+		return nodeActionDone{label: "toggle " + name}
 	}
+}
+
+func (s NodeScreen) doCreateNode(opts nodepkg.CreateNodeOpts, name string) tea.Cmd {
+	db, dbPath := s.db, s.dbPath
+	return func() tea.Msg {
+		client, err := controller.GetActiveControllerClient(db, dbPath)
+		if err != nil {
+			return nodeActionDone{label: "create", err: err}
+		}
+		if err := nodepkg.CreateNode(context.Background(), client, name, opts); err != nil {
+			return nodeActionDone{label: "create", err: err}
+		}
+		return nodeActionDone{label: "create " + name}
+	}
+}
+
+func (s NodeScreen) doUpdateNode(name string, opts nodepkg.UpdateNodeOpts) tea.Cmd {
+	db, dbPath := s.db, s.dbPath
+	return func() tea.Msg {
+		client, err := controller.GetActiveControllerClient(db, dbPath)
+		if err != nil {
+			return nodeActionDone{label: "edit", err: err}
+		}
+		if err := nodepkg.UpdateNode(context.Background(), client, name, opts); err != nil {
+			return nodeActionDone{label: "edit", err: err}
+		}
+		return nodeActionDone{label: "edit " + name}
+	}
+}
+
+func nodeScheduleAutoRefresh() tea.Cmd {
+	return tea.Tick(10*time.Second, func(_ time.Time) tea.Msg { return nodeAutoRefreshMsg{} })
 }
 
 // fetchNodeConfig loads and parses a node's config.xml for the detail panel.
@@ -209,6 +253,26 @@ func (s NodeScreen) current() *nodeEntry {
 
 // Update handles messages and key input.
 func (s NodeScreen) Update(msg tea.Msg) (NodeScreen, tea.Cmd) {
+	if s.form.Visible() {
+		var cmd tea.Cmd
+		s.form, cmd = s.form.Update(msg)
+		switch msg.(type) {
+		case FormSubmitMsg:
+			res := msg.(FormSubmitMsg)
+			return s, tea.Batch(cmd, s.handleNodeFormSubmit(res.Values))
+		case FormCancelMsg:
+			s.nodeFormIntent = ""
+		}
+		return s, cmd
+	}
+	if s.menu.Visible() {
+		var cmd tea.Cmd
+		s.menu, cmd = s.menu.Update(msg)
+		if sel, ok := msg.(MenuSelectMsg); ok {
+			return s.handleNodeMenuSelect(sel.Index)
+		}
+		return s, cmd
+	}
 	if s.modal.Visible() {
 		var cmd tea.Cmd
 		s.modal, cmd = s.modal.Update(msg)
@@ -255,10 +319,12 @@ func (s NodeScreen) Update(msg tea.Msg) (NodeScreen, tea.Cmd) {
 		if msg.err != nil {
 			s.detail.Show("Error", msg.err.Error())
 		} else {
-			s.detail.Show("Done", fmt.Sprintf("Action on '%s' completed.", s.pending))
-			delete(s.nodeConfigCache, s.pending)
-			s.pending = ""
-			s.action = ""
+			s.detail.Show("Done", msg.label+" succeeded.")
+			if strings.HasPrefix(msg.label, "delete") {
+				delete(s.nodeConfigCache, s.pending)
+				s.pending = ""
+				s.action = ""
+			}
 			return s, s.fetchNodes()
 		}
 		return s, nil
@@ -282,12 +348,35 @@ func (s NodeScreen) Update(msg tea.Msg) (NodeScreen, tea.Cmd) {
 		s.table.SetSize(msg.Width, maxInt(5, msg.Height-12))
 		s.modal.SetWidth(msg.Width)
 		s.detail.SetWidth(msg.Width)
+		s.form.width = msg.Width
+		s.menu.width = msg.Width
 		return s, nil
 
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "/":
 			s.search.Open()
+			return s, nil
+		case "enter":
+			if c := s.current(); c != nil {
+				s.activeNode = c.Name
+				s.menu.Show("Node: "+c.Name, []string{"Edit", "Toggle Offline", "Delete"})
+			}
+			return s, nil
+		case "ctrl+n":
+			s.nodeFormIntent = "create"
+			s.form.Show("Create New Node", []formField{
+				{Label: "Name", Required: true, Placeholder: "my-agent"},
+				{Label: "Remote Dir", Required: true, Placeholder: "/home/jenkins"},
+				{Label: "Executors", Value: "1"},
+				{Label: "Labels", Placeholder: "linux docker"},
+				{Label: "Description"},
+				{Label: "Launcher", Value: "ssh", Placeholder: "ssh | jnlp"},
+				{Label: "SSH Host", Placeholder: "192.168.1.100"},
+				{Label: "SSH Port", Value: "22"},
+				{Label: "Credential ID", Placeholder: "ssh-cred-id"},
+				{Label: "Availability", Value: "always", Placeholder: "always | demand"},
+			})
 			return s, nil
 		case "ctrl+d":
 			if c := s.current(); c != nil {
@@ -303,10 +392,20 @@ func (s NodeScreen) Update(msg tea.Msg) (NodeScreen, tea.Cmd) {
 				s.modal.Show("Toggle offline", fmt.Sprintf("Toggle offline state of '%s'?", c.Name))
 			}
 			return s, nil
+		case "f":
+			s.autoRefresh = !s.autoRefresh
+			if s.autoRefresh {
+				return s, nodeScheduleAutoRefresh()
+			}
+			return s, nil
 		case "r":
 			s.loading = true
 			return s, s.fetchNodes()
 		}
+	}
+
+	if _, ok := msg.(nodeAutoRefreshMsg); ok && s.autoRefresh {
+		return s, tea.Batch(s.fetchNodes(), nodeScheduleAutoRefresh())
 	}
 
 	before := s.table.Cursor()
@@ -335,8 +434,160 @@ func (s *NodeScreen) maybeFetchDetail() tea.Cmd {
 	return s.fetchNodeConfig(c.Name)
 }
 
+func (s NodeScreen) handleNodeMenuSelect(idx int) (NodeScreen, tea.Cmd) {
+	switch idx {
+	case 0: // Edit
+		c := s.current()
+		if c == nil {
+			return s, nil
+		}
+		s.activeNode = c.Name
+		s.nodeFormIntent = "edit"
+		cfg := s.nodeConfig
+		remoteDir := ""
+		launcher := "jnlp"
+		host := ""
+		port := "22"
+		credID := ""
+		availability := "always"
+		if cfg != nil {
+			launcher = cfg.LauncherType
+			host = cfg.Host
+			if cfg.Port > 0 {
+				port = strconv.Itoa(cfg.Port)
+			}
+			credID = cfg.CredID
+			availability = cfg.Availability
+			remoteDir = cfg.RemoteDir
+		}
+		s.form.Show("Edit Node: "+c.Name, []formField{
+			{Label: "Remote Dir", Value: remoteDir, Placeholder: "/home/jenkins"},
+			{Label: "Executors", Value: strconv.Itoa(c.Executors)},
+			{Label: "Labels", Value: c.Labels},
+			{Label: "Description", Value: c.Description},
+			{Label: "Launcher", Value: launcher, Placeholder: "ssh | jnlp"},
+			{Label: "SSH Host", Value: host},
+			{Label: "SSH Port", Value: port},
+			{Label: "Credential ID", Value: credID},
+			{Label: "Availability", Value: availability, Placeholder: "always | demand"},
+		})
+	case 1: // Toggle Offline
+		if c := s.current(); c != nil {
+			s.pending = c.Name
+			s.action = "toggle"
+			s.modal.Show("Toggle offline", fmt.Sprintf("Toggle offline state of '%s'?", c.Name))
+		}
+	case 2: // Delete
+		if c := s.current(); c != nil {
+			s.pending = c.Name
+			s.action = "delete"
+			s.modal.Show("Delete node", fmt.Sprintf("Delete node '%s'? This cannot be undone.", c.Name))
+		}
+	}
+	return s, nil
+}
+
+func (s NodeScreen) handleNodeFormSubmit(vals []string) tea.Cmd {
+	intent := s.nodeFormIntent
+	s.nodeFormIntent = ""
+	switch intent {
+	case "create":
+		if len(vals) < 2 || strings.TrimSpace(vals[0]) == "" || strings.TrimSpace(vals[1]) == "" {
+			return nil
+		}
+		name := strings.TrimSpace(vals[0])
+		exec := 1
+		if len(vals) > 2 {
+			if n, err := strconv.Atoi(strings.TrimSpace(vals[2])); err == nil && n > 0 {
+				exec = n
+			}
+		}
+		port := 22
+		if len(vals) > 7 {
+			if p, err := strconv.Atoi(strings.TrimSpace(vals[7])); err == nil && p > 0 {
+				port = p
+			}
+		}
+		launcher := "ssh"
+		if len(vals) > 5 {
+			launcher = strings.TrimSpace(vals[5])
+		}
+		opts := nodepkg.CreateNodeOpts{
+			RemoteDir:    strings.TrimSpace(vals[1]),
+			NumExecutors: exec,
+			Labels:       strGet(vals, 3),
+			Desc:         strGet(vals, 4),
+			LauncherType: launcher,
+			Host:         strGet(vals, 6),
+			Port:         port,
+			CredID:       strGet(vals, 8),
+			Availability: strGetDef(vals, 9, "always"),
+		}
+		return s.doCreateNode(opts, name)
+	case "edit":
+		if len(vals) < 1 {
+			return nil
+		}
+		remoteDir := strings.TrimSpace(vals[0])
+		exec := 0
+		if len(vals) > 1 {
+			if n, err := strconv.Atoi(strings.TrimSpace(vals[1])); err == nil && n > 0 {
+				exec = n
+			}
+		}
+		port := 0
+		if len(vals) > 6 {
+			if p, err := strconv.Atoi(strings.TrimSpace(vals[6])); err == nil && p > 0 {
+				port = p
+			}
+		}
+		launcher := strGet(vals, 4)
+		host := strGet(vals, 5)
+		credID := strGet(vals, 7)
+		avail := strGet(vals, 8)
+		labels := strGet(vals, 2)
+		desc := strGet(vals, 3)
+		opts := nodepkg.UpdateNodeOpts{}
+		if remoteDir != "" {
+			opts.RemoteDir = &remoteDir
+		}
+		if exec > 0 {
+			opts.NumExecutors = &exec
+		}
+		if labels != "" {
+			opts.Labels = &labels
+		}
+		if desc != "" {
+			opts.Desc = &desc
+		}
+		if launcher != "" {
+			opts.LauncherType = &launcher
+		}
+		if host != "" {
+			opts.Host = &host
+		}
+		if port > 0 {
+			opts.Port = &port
+		}
+		if credID != "" {
+			opts.CredID = &credID
+		}
+		if avail != "" {
+			opts.Availability = &avail
+		}
+		return s.doUpdateNode(s.activeNode, opts)
+	}
+	return nil
+}
+
 // View renders the node screen.
 func (s NodeScreen) View() string {
+	if s.form.Visible() {
+		return s.form.View()
+	}
+	if s.menu.Visible() {
+		return s.menu.View()
+	}
 	if s.modal.Visible() {
 		return s.modal.View()
 	}
@@ -344,7 +595,11 @@ func (s NodeScreen) View() string {
 		return s.detail.View()
 	}
 	var sb strings.Builder
-	sb.WriteString(theme.StyleTitle.Render(theme.SymOnline+" Nodes") + "\n")
+	title := theme.StyleTitle.Render(theme.SymOnline + " Nodes")
+	if s.autoRefresh {
+		title += " " + theme.StyleDim.Render("[auto]")
+	}
+	sb.WriteString(title + "\n")
 	if s.loading {
 		sb.WriteString(theme.StyleDim.Render(theme.SymLoading + " Loading nodes..."))
 		return sb.String()
@@ -391,6 +646,6 @@ func (s NodeScreen) View() string {
 		}
 	}
 
-	sb.WriteString(theme.StyleDim.Render("Enter menu  ·  ^D delete  ·  ^O offline  ·  r refresh  ·  / search"))
+	sb.WriteString(theme.StyleDim.Render("Enter menu  ·  ^N new  ·  ^D delete  ·  ^O offline  ·  f auto-refresh  ·  r refresh  ·  / search"))
 	return sb.String()
 }

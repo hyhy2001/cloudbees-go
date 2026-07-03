@@ -115,6 +115,155 @@ func ParseNodeConfig(xmlStr string) NodeConfig {
 	}
 }
 
+// CreateNodeOpts holds parameters for creating a new permanent agent.
+type CreateNodeOpts struct {
+	RemoteDir     string
+	NumExecutors  int
+	Labels        string
+	Desc          string
+	LauncherType  string // "ssh" | "jnlp"
+	Host          string
+	Port          int
+	CredID        string
+	JavaPath      string
+	Availability  string // "always" | "demand"
+	InDemandDelay int
+	IdleDelay     int
+}
+
+// CreateNode creates a new permanent agent via /computer/doCreateItem.
+// Mirrors the CLI nodeCreateCmd logic but as a library function.
+func CreateNode(ctx context.Context, client *api.Client, name string, opts CreateNodeOpts) error {
+	if opts.NumExecutors <= 0 {
+		opts.NumExecutors = 1
+	}
+	if opts.Port <= 0 {
+		opts.Port = 22
+	}
+	host := ""
+	if opts.LauncherType == "ssh" {
+		host = opts.Host
+	}
+	body := buildNodeFormPayload(name, opts.RemoteDir, opts.NumExecutors, opts.Labels, opts.Desc,
+		host, opts.Port, opts.CredID, opts.JavaPath, opts.Availability, opts.InDemandDelay, opts.IdleDelay)
+	resp, err := client.Do(ctx, "POST", "/computer/doCreateItem", strings.NewReader(body), "application/x-www-form-urlencoded")
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 && resp.StatusCode != 302 {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("create node: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+	}
+	// If SSH creation failed, retry as JNLP then patch config.xml with SSH launcher.
+	if host != "" && (resp.StatusCode == 500 || resp.StatusCode == 400) {
+		jnlpBody := buildNodeFormPayload(name, opts.RemoteDir, opts.NumExecutors, opts.Labels, opts.Desc,
+			"", 22, "", opts.JavaPath, opts.Availability, opts.InDemandDelay, opts.IdleDelay)
+		resp2, err2 := client.Do(ctx, "POST", "/computer/doCreateItem", strings.NewReader(jnlpBody), "application/x-www-form-urlencoded")
+		if err2 != nil {
+			return err2
+		}
+		resp2.Body.Close()
+		jp := opts.JavaPath
+		if jp == "" {
+			jp = defaultJavaPath
+		}
+		xmlStr, xmlErr := GetNodeConfigXML(ctx, client, name)
+		if xmlErr == nil {
+			sshBlock := buildLauncherXML("ssh", opts.Host, opts.Port, opts.CredID, jp)
+			xmlStr = swapXMLSubtree(xmlStr, "launcher", sshBlock)
+			_ = client.PostXML(ctx, "/computer/"+nodeSeg(name)+"/config.xml", xmlStr)
+		}
+	}
+	return nil
+}
+
+// UpdateNodeOpts holds fields to patch on an existing node. Zero/nil = keep current.
+type UpdateNodeOpts struct {
+	RemoteDir    *string
+	NumExecutors *int
+	Labels       *string
+	Desc         *string
+	// Launcher: all three must be set together to swap launcher type.
+	LauncherType *string
+	Host         *string
+	Port         *int
+	CredID       *string
+	Availability *string
+	InDemandDelay *int
+	IdleDelay    *int
+	ControlledAgent *bool
+}
+
+// UpdateNode patches a node's config.xml with any non-nil fields.
+func UpdateNode(ctx context.Context, client *api.Client, name string, opts UpdateNodeOpts) error {
+	xmlStr, err := GetNodeConfigXML(ctx, client, name)
+	if err != nil {
+		return err
+	}
+	cfg := parseNodeConfigXML(xmlStr)
+
+	if opts.Desc != nil {
+		xmlStr = setXMLElement(xmlStr, "description", *opts.Desc)
+	}
+	if opts.RemoteDir != nil {
+		xmlStr = setXMLElement(xmlStr, "remoteFS", *opts.RemoteDir)
+	}
+	if opts.NumExecutors != nil {
+		xmlStr = setXMLElement(xmlStr, "numExecutors", fmt.Sprintf("%d", *opts.NumExecutors))
+	}
+	if opts.Labels != nil {
+		xmlStr = setXMLElement(xmlStr, "label", *opts.Labels)
+	}
+
+	launcherTouched := opts.LauncherType != nil || opts.Host != nil || opts.Port != nil || opts.CredID != nil
+	if launcherTouched {
+		lt := cfg.launcherType
+		if opts.LauncherType != nil {
+			lt = *opts.LauncherType
+		}
+		h := cfg.host
+		if opts.Host != nil {
+			h = *opts.Host
+		}
+		p := cfg.port
+		if opts.Port != nil {
+			p = *opts.Port
+		}
+		cred := cfg.credID
+		if opts.CredID != nil {
+			cred = *opts.CredID
+		}
+		jp := cfg.javaPath
+		block := buildLauncherXML(lt, h, p, cred, jp)
+		xmlStr = swapXMLSubtree(xmlStr, "launcher", block)
+	}
+
+	retentionTouched := opts.Availability != nil || opts.InDemandDelay != nil || opts.IdleDelay != nil
+	if retentionTouched {
+		avail := cfg.availability
+		if opts.Availability != nil {
+			avail = *opts.Availability
+		}
+		ind := cfg.inDemandDelay
+		if opts.InDemandDelay != nil {
+			ind = *opts.InDemandDelay
+		}
+		idle := cfg.idleDelay
+		if opts.IdleDelay != nil {
+			idle = *opts.IdleDelay
+		}
+		block := buildRetentionXML(avail, ind, idle)
+		xmlStr = swapXMLSubtree(xmlStr, "retentionStrategy", block)
+	}
+
+	if opts.ControlledAgent != nil {
+		xmlStr = setControlledAgentXML(xmlStr, *opts.ControlledAgent)
+	}
+
+	return client.PostXML(ctx, "/computer/"+nodeSeg(name)+"/config.xml", xmlStr)
+}
+
 // ── Folders Plus controlled-agent handshake ───────────────────────────────────
 
 const controlledAgentPropTag = "com.cloudbees.jenkins.plugins.foldersplus.SecurityTokensNodeProperty"
