@@ -102,6 +102,10 @@ func (m TableModel) Update(msg tea.Msg) (TableModel, tea.Cmd) {
 			switch msg.Type {
 			case tea.KeyEsc, tea.KeyEnter:
 				m.searching = false
+				if msg.Type == tea.KeyEsc {
+					m.searchQ = ""
+					m.applyFilter()
+				}
 				return m, nil
 			case tea.KeyBackspace, tea.KeyDelete:
 				if len(m.searchQ) > 0 {

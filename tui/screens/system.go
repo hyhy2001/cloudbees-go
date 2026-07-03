@@ -57,6 +57,10 @@ func (s SystemScreen) Init() tea.Cmd {
 	return s.fetchInfo()
 }
 
+// InputCaptured always reports false — the System screen has no overlay,
+// form, or menu that needs to capture raw key input.
+func (s SystemScreen) InputCaptured() bool { return false }
+
 func (s SystemScreen) fetchInfo() tea.Cmd {
 	db, dbPath := s.db, s.dbPath
 	return func() tea.Msg {

@@ -40,15 +40,23 @@ func detectServerType(db *sql.DB, dbPath string) tea.Cmd {
 
 // Tab names — Controllers tab is always in the list but hidden on plain Jenkins.
 var allTabNames = []string{"Jobs", "Nodes", "Credentials", "Controllers", "Info"}
+
 const controllerTabIndex = 3
+
+// inputCapturer is implemented by screens that can report whether they
+// currently own an overlay/form/menu that needs raw key input — while true,
+// the app shell must not steal digit/tab/quit keys for global navigation.
+type inputCapturer interface {
+	InputCaptured() bool
+}
 
 // App is the root TUI model.
 type App struct {
 	db         *sql.DB
 	dbPath     string
-	tabs       []string   // visible tab names (may exclude Controllers)
-	tabMap     []int      // tabMap[visible index] = allTabNames index
-	activeTab  int        // index into tabs (visible)
+	tabs       []string // visible tab names (may exclude Controllers)
+	tabMap     []int    // tabMap[visible index] = allTabNames index
+	activeTab  int      // index into tabs (visible)
 	jobScreen  screens.JobScreen
 	nodeScreen screens.NodeScreen
 	credScreen screens.CredScreen
@@ -58,6 +66,25 @@ type App struct {
 	height     int
 	quitting   bool
 	isOC       bool // true = server is Operations Center, show Controllers tab
+}
+
+// activeInputCaptured reports whether the currently active screen owns an
+// overlay/form/menu that wants raw keys — in that case the app-global
+// tab-switch/digit-jump/quit bindings must not intercept the keystroke.
+func (a App) activeInputCaptured() bool {
+	switch a.allTabIndex() {
+	case 0:
+		return a.jobScreen.InputCaptured()
+	case 1:
+		return a.nodeScreen.InputCaptured()
+	case 2:
+		return a.credScreen.InputCaptured()
+	case 3:
+		return a.ctrlScreen.InputCaptured()
+	case 4:
+		return a.sysScreen.InputCaptured()
+	}
+	return false
 }
 
 // NewApp creates and initializes the TUI application.
@@ -134,22 +161,25 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case tea.KeyMsg:
-		switch msg.String() {
-		case "q", "Q", "ctrl+c":
-			a.quitting = true
-			return a, tea.Quit
-		case "tab", "right":
-			a.activeTab = (a.activeTab + 1) % len(a.tabs)
-			return a, nil
-		case "shift+tab", "left":
-			a.activeTab = (a.activeTab - 1 + len(a.tabs)) % len(a.tabs)
-			return a, nil
-		}
-		// Numeric shortcuts: 1–5 map to visible tab indices.
-		for i := range a.tabs {
-			if msg.String() == fmt.Sprintf("%d", i+1) {
-				a.activeTab = i
+		captured := a.activeInputCaptured()
+		if !captured {
+			switch msg.String() {
+			case "ctrl+q", "q", "Q", "ctrl+c":
+				a.quitting = true
+				return a, tea.Quit
+			case "tab", "right":
+				a.activeTab = (a.activeTab + 1) % len(a.tabs)
 				return a, nil
+			case "shift+tab", "left":
+				a.activeTab = (a.activeTab - 1 + len(a.tabs)) % len(a.tabs)
+				return a, nil
+			}
+			// Numeric shortcuts: 1–5 map to visible tab indices.
+			for i := range a.tabs {
+				if msg.String() == fmt.Sprintf("%d", i+1) {
+					a.activeTab = i
+					return a, nil
+				}
 			}
 		}
 		return a.delegateKey(msg)
@@ -286,6 +316,7 @@ func renderStatusBar(activeTab, width int) string {
 			theme.StyleKeyHint.Render("Enter")+theme.StyleDim.Render(" menu"),
 			theme.StyleKeyHint.Render("^N")+theme.StyleDim.Render(" new"),
 			theme.StyleKeyHint.Render("^D")+theme.StyleDim.Render(" delete"),
+			theme.StyleKeyHint.Render("^O")+theme.StyleDim.Render(" offline"),
 			theme.StyleKeyHint.Render("r")+theme.StyleDim.Render(" refresh"),
 		)
 	case 2: // Credentials

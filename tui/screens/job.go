@@ -199,7 +199,7 @@ func (f formOverlay) View() string {
 		display := val
 		if len(fl.Options) > 0 {
 			if on {
-				display = theme.StyleDim.Render("◀ ") + val + theme.StyleDim.Render(" ▶")
+				display = theme.StyleDim.Render(theme.SymArrow+" ") + val + theme.StyleDim.Render(" "+theme.SymArrow)
 			}
 		} else {
 			if on {
@@ -269,7 +269,7 @@ func (m menuOverlay) Update(msg tea.Msg) (menuOverlay, tea.Cmd) {
 	default:
 		// 1–9 quick pick
 		if len(km.String()) == 1 && km.String() >= "1" && km.String() <= "9" {
-			idx := int(km.String()[0]-'1')
+			idx := int(km.String()[0] - '1')
 			if idx < len(m.items) {
 				m.visible = false
 				return m, func() tea.Msg { return MenuSelectMsg{Index: idx} }
@@ -381,6 +381,15 @@ func NewJobScreen(db *sql.DB, dbPath string) JobScreen {
 // Init fires the initial data fetch.
 func (s JobScreen) Init() tea.Cmd {
 	return s.fetchJobs()
+}
+
+// InputCaptured reports whether any overlay/form/menu is currently visible,
+// meaning this screen wants raw keys (digits, tab, q) routed to it instead of
+// being intercepted by the app shell for tab-switching/quit.
+func (s JobScreen) InputCaptured() bool {
+	return s.schedule.Visible() || s.email.Visible() || s.params.Visible() ||
+		s.agents.Visible() || s.form.Visible() || s.menu.Visible() ||
+		s.confirm.Visible() || s.message.Visible()
 }
 
 // ── data fetches ──────────────────────────────────────────────────────────────
@@ -777,6 +786,12 @@ func (s JobScreen) Update(msg tea.Msg) (JobScreen, tea.Cmd) {
 		switch msg := msg.(type) {
 		case components.GrantAddMsg:
 			s.formIntent = "add-agent"
+			// Hide the agents overlay first — it sits earlier in the priority
+			// chain than the form, so leaving it visible would swallow all
+			// subsequent key input meant for the "Add Agent" form and it would
+			// never render either. Re-shown via GrantCloseMsg/openAgents flow
+			// isn't needed here since the form result reopens the list itself.
+			s.agents.Hide()
 			s.form.Show("Add Agent", []formField{
 				{Label: "Node name", Required: true},
 			})
@@ -798,9 +813,23 @@ func (s JobScreen) Update(msg tea.Msg) (JobScreen, tea.Cmd) {
 		switch msg.(type) {
 		case FormSubmitMsg:
 			res := msg.(FormSubmitMsg)
+			if s.formIntent == "add-agent" {
+				// Re-show the agents list overlay (refreshed) after the
+				// add-agent submission completes, so the user lands back on
+				// the grant list rather than the bare job list.
+				folder := s.agentFolder
+				cmd2 := s.handleFormSubmit(res.Values)
+				s.agents.Show("Controlled Agents — "+folder, "", "Node", "No controlled agents.", "add agent")
+				return s, tea.Batch(cmd, cmd2, s.fetchAgents(folder))
+			}
 			return s, tea.Batch(cmd, s.handleFormSubmit(res.Values))
 		case FormCancelMsg:
-			// nothing extra needed
+			if s.formIntent == "add-agent" {
+				folder := s.agentFolder
+				s.formIntent = ""
+				s.agents.Show("Controlled Agents — "+folder, "", "Node", "No controlled agents.", "add agent")
+				return s, tea.Batch(cmd, s.fetchAgents(folder))
+			}
 		}
 		return s, cmd
 	}
@@ -913,12 +942,7 @@ func (s JobScreen) Update(msg tea.Msg) (JobScreen, tea.Cmd) {
 			if name == "" {
 				return s, nil
 			}
-			if typ == "FD" {
-				// folder → treat as drill (show agents shortcut) or menu
-				s = s.openMenu(name, typ)
-			} else {
-				s = s.openMenu(name, typ)
-			}
+			s = s.openMenu(name, typ)
 			return s, nil
 		case "ctrl+n":
 			// new job — fetch nodes first, then open create form
@@ -927,7 +951,7 @@ func (s JobScreen) Update(msg tea.Msg) (JobScreen, tea.Cmd) {
 				return s, s.fetchNodes()
 			}
 			return s.openCreateForm()
-		case "ctrl+x":
+		case "ctrl+d":
 			name := s.selectedJobName()
 			if name == "" {
 				return s, nil
@@ -1014,7 +1038,6 @@ func (s JobScreen) handleMenuAction(act jobAction) (JobScreen, tea.Cmd) {
 		return s, nil
 	case actClone:
 		s.menu.Hide()
-		s.formIntent = "create-freestyle"
 		s.message.Show("Clone", "Clone not yet implemented in TUI. Use: bee job clone "+name)
 		return s, nil
 	case actAgents:

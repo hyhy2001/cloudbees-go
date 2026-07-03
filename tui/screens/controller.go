@@ -9,8 +9,8 @@ import (
 	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 
-	"bee/internal/session"
 	"bee/internal/api"
+	"bee/internal/session"
 	"bee/plugins/controller"
 	"bee/tui/components"
 	"bee/tui/theme"
@@ -32,6 +32,12 @@ type controllersLoaded struct {
 
 type ctrlSelectDone struct {
 	name string
+	err  error
+}
+
+type ctrlInfoLoaded struct {
+	name string
+	caps controller.Capabilities
 	err  error
 }
 
@@ -71,6 +77,13 @@ func (s ControllerScreen) Init() tea.Cmd {
 	return s.fetchControllers()
 }
 
+// InputCaptured reports whether the info/detail modal is currently visible,
+// meaning this screen wants raw keys routed to it instead of being
+// intercepted by the app shell for tab-switching/quit.
+func (s ControllerScreen) InputCaptured() bool {
+	return s.detail.Visible()
+}
+
 func (s ControllerScreen) fetchControllers() tea.Cmd {
 	database, dbPath := s.db, s.dbPath
 	return func() tea.Msg {
@@ -105,6 +118,21 @@ func (s ControllerScreen) doSelect(name, ctrlURL string) tea.Cmd {
 			return ctrlSelectDone{err: err}
 		}
 		return ctrlSelectDone{name: name}
+	}
+}
+
+func (s ControllerScreen) doFetchInfo(name, ctrlURL string) tea.Cmd {
+	database, dbPath := s.db, s.dbPath
+	return func() tea.Msg {
+		client, err := controller.GetActiveControllerClient(database, dbPath)
+		if err != nil {
+			return ctrlInfoLoaded{name: name, err: err}
+		}
+		caps, err := controller.GetControllerCapabilities(context.Background(), database, client, name, ctrlURL)
+		if err != nil {
+			return ctrlInfoLoaded{name: name, err: err}
+		}
+		return ctrlInfoLoaded{name: name, caps: caps}
 	}
 }
 
@@ -156,6 +184,18 @@ func (s ControllerScreen) Update(msg tea.Msg) (ControllerScreen, tea.Cmd) {
 		}
 		return s, nil
 
+	case ctrlInfoLoaded:
+		if msg.err != nil {
+			s.detail.Show("Error", msg.err.Error())
+			return s, nil
+		}
+		body := fmt.Sprintf(
+			"Type: %s\nCan create job:  %v\nCan create node: %v\nCan create cred: %v",
+			msg.caps.TypeLabel, msg.caps.CanCreateJob, msg.caps.CanCreateNode, msg.caps.CanCreateCred,
+		)
+		s.detail.Show("Controller: "+msg.name, body)
+		return s, nil
+
 	case tea.WindowSizeMsg:
 		s.width = msg.Width
 		s.height = msg.Height
@@ -165,6 +205,20 @@ func (s ControllerScreen) Update(msg tea.Msg) (ControllerScreen, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "enter":
+			row := s.table.SelectedRow()
+			if row == nil {
+				return s, nil
+			}
+			name := row[1]
+			var ctrlURL string
+			for _, c := range s.ctrls {
+				if c.Name == name {
+					ctrlURL = c.URL
+					break
+				}
+			}
+			return s, s.doFetchInfo(name, ctrlURL)
+		case "s":
 			row := s.table.SelectedRow()
 			if row == nil {
 				return s, nil

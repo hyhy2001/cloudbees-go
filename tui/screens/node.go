@@ -9,8 +9,8 @@ import (
 	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 
-	nodepkg "bee/plugins/node"
 	"bee/plugins/controller"
+	nodepkg "bee/plugins/node"
 	"bee/tui/components"
 	"bee/tui/theme"
 )
@@ -70,6 +70,13 @@ func (s NodeScreen) Init() tea.Cmd {
 	return s.fetchNodes()
 }
 
+// InputCaptured reports whether the confirm modal or detail message is
+// currently visible, meaning this screen wants raw keys routed to it instead
+// of being intercepted by the app shell for tab-switching/quit.
+func (s NodeScreen) InputCaptured() bool {
+	return s.modal.Visible() || s.detail.Visible()
+}
+
 func (s NodeScreen) fetchNodes() tea.Cmd {
 	db, dbPath := s.db, s.dbPath
 	return func() tea.Msg {
@@ -127,9 +134,9 @@ func (s NodeScreen) doToggleOffline(name string) tea.Cmd {
 func buildNodeRows(nodes []nodeEntry) []table.Row {
 	rows := make([]table.Row, len(nodes))
 	for i, n := range nodes {
-		status := theme.SymOnline + " online"
+		status := theme.StyleSuccess.Render(theme.SymOnline) + " online"
 		if n.Offline {
-			status = theme.SymOffline + " offline"
+			status = theme.StyleWarning.Render(theme.SymOffline) + " offline"
 		}
 		desc := n.Description
 		if len(desc) > 22 {
@@ -201,7 +208,7 @@ func (s NodeScreen) Update(msg tea.Msg) (NodeScreen, tea.Cmd) {
 
 	case tea.KeyMsg:
 		switch msg.String() {
-		case "ctrl+x":
+		case "ctrl+d":
 			row := s.table.SelectedRow()
 			if row != nil {
 				s.pending = row[0]
@@ -252,6 +259,6 @@ func (s NodeScreen) View() string {
 	}
 	sb.WriteString(s.table.View())
 	sb.WriteString("\n")
-	sb.WriteString(theme.StyleDim.Render("Enter menu  ·  ↑↓ move  ·  Ctrl+n new  ·  Ctrl+d delete  ·  r refresh  ·  / search"))
+	sb.WriteString(theme.StyleDim.Render("Enter menu  ·  ^D delete  ·  ^O offline  ·  r refresh  ·  / search"))
 	return sb.String()
 }

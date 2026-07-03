@@ -9,8 +9,8 @@ import (
 	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 
-	credpkg "bee/plugins/cred"
 	"bee/plugins/controller"
+	credpkg "bee/plugins/cred"
 	"bee/tui/components"
 	"bee/tui/theme"
 )
@@ -64,6 +64,13 @@ func NewCredScreen(db *sql.DB, dbPath string) CredScreen {
 // Init fires the initial data fetch.
 func (s CredScreen) Init() tea.Cmd {
 	return s.fetchCreds()
+}
+
+// InputCaptured reports whether the confirm modal or detail message is
+// currently visible, meaning this screen wants raw keys routed to it instead
+// of being intercepted by the app shell for tab-switching/quit.
+func (s CredScreen) InputCaptured() bool {
+	return s.modal.Visible() || s.detail.Visible()
 }
 
 func (s CredScreen) fetchCreds() tea.Cmd {
@@ -168,7 +175,7 @@ func (s CredScreen) Update(msg tea.Msg) (CredScreen, tea.Cmd) {
 
 	case tea.KeyMsg:
 		switch msg.String() {
-		case "ctrl+x":
+		case "ctrl+d":
 			row := s.table.SelectedRow()
 			if row != nil {
 				s.pending = row[0]
@@ -210,6 +217,6 @@ func (s CredScreen) View() string {
 	}
 	sb.WriteString(s.table.View())
 	sb.WriteString("\n")
-	sb.WriteString(theme.StyleDim.Render("Enter menu  ·  ↑↓ move  ·  Ctrl+n new  ·  Ctrl+d delete  ·  r refresh  ·  / search"))
+	sb.WriteString(theme.StyleDim.Render("↑↓ move  ·  ^D delete  ·  r refresh  ·  / search"))
 	return sb.String()
 }
