@@ -1224,6 +1224,29 @@ func (s JobScreen) Update(msg tea.Msg) (JobScreen, tea.Cmd) {
 		return s, tea.Batch(s.fetchJobs(), s.scheduleAutoRefresh())
 	}
 
+	// Form submit/cancel arrive one cycle after the form hides itself, so handle
+	// them before the overlay-visibility gates (which would otherwise swallow
+	// the deferred message). formIntent disambiguates the flows.
+	switch m := msg.(type) {
+	case FormSubmitMsg:
+		if s.formIntent == "add-agent" {
+			folder := s.agentFolder
+			cmd2 := s.handleFormSubmit(m.Values)
+			s.agents.Show("Controlled Agents — "+folder, "", "Node", "No controlled agents.", "add agent")
+			return s, tea.Batch(cmd2, s.fetchAgents(folder))
+		}
+		return s, s.handleFormSubmit(m.Values)
+	case FormCancelMsg:
+		if s.formIntent == "add-agent" {
+			folder := s.agentFolder
+			s.formIntent = ""
+			s.agents.Show("Controlled Agents — "+folder, "", "Node", "No controlled agents.", "add agent")
+			return s, s.fetchAgents(folder)
+		}
+		s.formIntent = ""
+		return s, nil
+	}
+
 	if s.schedule.Visible() {
 		var cmd tea.Cmd
 		s.schedule, cmd = s.schedule.Update(msg)
@@ -1291,27 +1314,6 @@ func (s JobScreen) Update(msg tea.Msg) (JobScreen, tea.Cmd) {
 	if s.form.Visible() {
 		var cmd tea.Cmd
 		s.form, cmd = s.form.Update(msg)
-		switch msg.(type) {
-		case FormSubmitMsg:
-			res := msg.(FormSubmitMsg)
-			if s.formIntent == "add-agent" {
-				// Re-show the agents list overlay (refreshed) after the
-				// add-agent submission completes, so the user lands back on
-				// the grant list rather than the bare job list.
-				folder := s.agentFolder
-				cmd2 := s.handleFormSubmit(res.Values)
-				s.agents.Show("Controlled Agents — "+folder, "", "Node", "No controlled agents.", "add agent")
-				return s, tea.Batch(cmd, cmd2, s.fetchAgents(folder))
-			}
-			return s, tea.Batch(cmd, s.handleFormSubmit(res.Values))
-		case FormCancelMsg:
-			if s.formIntent == "add-agent" {
-				folder := s.agentFolder
-				s.formIntent = ""
-				s.agents.Show("Controlled Agents — "+folder, "", "Node", "No controlled agents.", "add agent")
-				return s, tea.Batch(cmd, s.fetchAgents(folder))
-			}
-		}
 		return s, cmd
 	}
 	if sel, ok := msg.(MenuSelectMsg); ok {

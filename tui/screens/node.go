@@ -83,11 +83,12 @@ type NodeScreen struct {
 	action  string // "delete" | "toggle"
 	activeNode string // name being edited
 
-	autoRefresh    bool
-	nodeFormIntent string // "create" | "edit"
-	grantList      components.GrantListOverlay
-	grantNodeName  string // node currently shown in grantList
-	approveInput   formOverlay // single-field "folder name" form for adding approval
+	autoRefresh      bool
+	nodeFormIntent   string // "create" | "edit"
+	grantList        components.GrantListOverlay
+	grantNodeName    string // node currently shown in grantList
+	approveInput     formOverlay // single-field "folder name" form for adding approval
+	approveInputOpen bool        // true while the approve-folder form awaits submit
 	showAll        bool
 	tracked        map[string]bool
 	baseURL        string // active controller URL for track/untrack
@@ -428,15 +429,27 @@ func (s NodeScreen) current() *nodeEntry {
 
 // Update handles messages and key input.
 func (s NodeScreen) Update(msg tea.Msg) (NodeScreen, tea.Cmd) {
+	// Form submit/cancel arrive one cycle after the form hides itself, so handle
+	// them before the visibility gates (which would otherwise swallow them). Two
+	// forms share FormSubmitMsg — approveInputOpen disambiguates which is live.
+	switch m := msg.(type) {
+	case FormSubmitMsg:
+		if s.approveInputOpen {
+			s.approveInputOpen = false
+			if folderName := strGet(m.Values, 0); folderName != "" {
+				return s, s.doApproveFolder(s.grantNodeName, folderName)
+			}
+			return s, nil
+		}
+		return s, s.handleNodeFormSubmit(m.Values)
+	case FormCancelMsg:
+		s.approveInputOpen = false
+		s.nodeFormIntent = ""
+		return s, nil
+	}
 	if s.approveInput.Visible() {
 		var cmd tea.Cmd
 		s.approveInput, cmd = s.approveInput.Update(msg)
-		if sub, ok := msg.(FormSubmitMsg); ok {
-			folderName := strGet(sub.Values, 0)
-			if folderName != "" {
-				return s, s.doApproveFolder(s.grantNodeName, folderName)
-			}
-		}
 		return s, cmd
 	}
 	if s.grantList.Visible() {
@@ -444,6 +457,7 @@ func (s NodeScreen) Update(msg tea.Msg) (NodeScreen, tea.Cmd) {
 		s.grantList, cmd = s.grantList.Update(msg)
 		switch m := msg.(type) {
 		case components.GrantAddMsg:
+			s.approveInputOpen = true
 			s.approveInput.Show("Approve Folder", []formField{
 				{Label: "Folder name", Required: true, Placeholder: "my-folder"},
 			})
@@ -461,13 +475,6 @@ func (s NodeScreen) Update(msg tea.Msg) (NodeScreen, tea.Cmd) {
 	if s.form.Visible() {
 		var cmd tea.Cmd
 		s.form, cmd = s.form.Update(msg)
-		switch msg.(type) {
-		case FormSubmitMsg:
-			res := msg.(FormSubmitMsg)
-			return s, tea.Batch(cmd, s.handleNodeFormSubmit(res.Values))
-		case FormCancelMsg:
-			s.nodeFormIntent = ""
-		}
 		return s, cmd
 	}
 	if sel, ok := msg.(MenuSelectMsg); ok {

@@ -22,6 +22,12 @@ import (
 // is an Operations Center (has Controllers) or a plain Jenkins/Managed Controller.
 type serverTypeMsg struct{ isOC bool }
 
+// controllerClassFragments identify Operations Center items — a CJOC's root
+// _class is a plain "hudson.model.Hudson", so the tell is that its top-level
+// "jobs" are controllers (ManagedMaster/ConnectedMaster/…). Mirrors the TS
+// CONTROLLER_CLASS_FRAGMENTS list.
+var controllerClassFragments = []string{"ManagedMaster", "ConnectedMaster", "Controller", "Master"}
+
 func detectServerType(db *sql.DB, dbPath string) tea.Cmd {
 	return func() tea.Msg {
 		client, err := controller.GetActiveControllerClient(db, dbPath)
@@ -30,14 +36,27 @@ func detectServerType(db *sql.DB, dbPath string) tea.Cmd {
 		}
 		var result struct {
 			Class string `json:"_class"`
+			Jobs  []struct {
+				Class string `json:"_class"`
+			} `json:"jobs"`
 		}
-		if err := client.GetJSON(context.Background(), "/api/json?tree=_class", &result); err != nil {
+		if err := client.GetJSON(context.Background(), "/api/json?tree=_class,jobs[_class]", &result); err != nil {
 			return serverTypeMsg{isOC: false}
 		}
-		// Operations Center classes contain "opscenter" or "cjoc" (case-insensitive)
+		// Direct signal: the root class names Operations Center outright.
 		lower := strings.ToLower(result.Class)
-		isOC := strings.Contains(lower, "opscenter") || strings.Contains(lower, "cjoc")
-		return serverTypeMsg{isOC: isOC}
+		if strings.Contains(lower, "opscenter") || strings.Contains(lower, "cjoc") {
+			return serverTypeMsg{isOC: true}
+		}
+		// Otherwise a CJOC reveals itself by having controller-class children.
+		for _, j := range result.Jobs {
+			for _, frag := range controllerClassFragments {
+				if strings.Contains(j.Class, frag) {
+					return serverTypeMsg{isOC: true}
+				}
+			}
+		}
+		return serverTypeMsg{isOC: false}
 	}
 }
 
@@ -319,6 +338,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// App-level modal results — handled here, never fanned out to screens.
 	switch m := msg.(type) {
+	case screens.ControllerSelectedMsg:
+		a.activeCtrl = m.Name
+		return a, a.reloadDataScreens()
 	case components.FormResultMsg:
 		return a.handleFormResult(m)
 	case components.ConfirmResultMsg:
@@ -453,6 +475,26 @@ func (a *App) reloadScreens() tea.Cmd {
 		a.nodeScreen.Init(),
 		a.credScreen.Init(),
 		a.ctrlScreen.Init(),
+	)
+}
+
+// reloadDataScreens refetches the job/node/credential screens against the
+// newly-active controller, leaving the controller screen (and its list/cursor)
+// intact. Used after a controller is selected.
+func (a *App) reloadDataScreens() tea.Cmd {
+	a.jobScreen = screens.NewJobScreen(a.db, a.dbPath)
+	a.nodeScreen = screens.NewNodeScreen(a.db, a.dbPath)
+	a.credScreen = screens.NewCredScreen(a.db, a.dbPath)
+	if a.width > 0 {
+		sz := tea.WindowSizeMsg{Width: a.width, Height: a.height}
+		a.jobScreen, _ = a.jobScreen.Update(sz)
+		a.nodeScreen, _ = a.nodeScreen.Update(sz)
+		a.credScreen, _ = a.credScreen.Update(sz)
+	}
+	return tea.Batch(
+		a.jobScreen.Init(),
+		a.nodeScreen.Init(),
+		a.credScreen.Init(),
 	)
 }
 

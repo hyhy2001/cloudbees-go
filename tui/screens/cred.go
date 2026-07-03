@@ -285,16 +285,18 @@ func (s CredScreen) current() *credEntry {
 
 // Update handles messages and key input.
 func (s CredScreen) Update(msg tea.Msg) (CredScreen, tea.Cmd) {
+	// Form submit/cancel arrive one cycle after the form hides itself, so handle
+	// them before the visibility gate below (which would otherwise swallow them).
+	switch m := msg.(type) {
+	case FormSubmitMsg:
+		return s, s.handleCredFormSubmit(m.Values)
+	case FormCancelMsg:
+		s.credFormIntent = ""
+		return s, nil
+	}
 	if s.form.Visible() {
 		var cmd tea.Cmd
 		s.form, cmd = s.form.Update(msg)
-		switch msg.(type) {
-		case FormSubmitMsg:
-			res := msg.(FormSubmitMsg)
-			return s, tea.Batch(cmd, s.handleCredFormSubmit(res.Values))
-		case FormCancelMsg:
-			s.credFormIntent = ""
-		}
 		return s, cmd
 	}
 	// MenuSelectMsg arrives one cycle after the menu hides itself, so handle it

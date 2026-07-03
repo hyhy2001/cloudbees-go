@@ -39,6 +39,10 @@ type ctrlSelectDone struct {
 	err  error
 }
 
+// ControllerSelectedMsg is emitted after a controller becomes active so the app
+// shell can refresh the header and reload the other screens against it.
+type ControllerSelectedMsg struct{ Name string }
+
 type ctrlInfoLoaded struct {
 	name string
 	caps controller.Capabilities
@@ -256,13 +260,16 @@ func (s ControllerScreen) Update(msg tea.Msg) (ControllerScreen, tea.Cmd) {
 	case ctrlSelectDone:
 		if msg.err != nil {
 			s.detail.Show("Error", msg.err.Error())
-		} else {
-			s.activeName = msg.name
-			s.detail.Show("Selected", fmt.Sprintf("Active controller: %s", msg.name))
-			rows, keys := buildControllerRows(s.filteredControllers(), s.activeName)
-			s.table.SetRows(rows, keys)
+			return s, nil
 		}
-		return s, nil
+		s.activeName = msg.name
+		s.detail.Show("Selected", fmt.Sprintf("Active controller: %s", msg.name))
+		rows, keys := buildControllerRows(s.filteredControllers(), s.activeName)
+		s.table.SetRows(rows, keys)
+		// Tell the app shell so it can refresh the header + reload the other
+		// screens against the newly-active controller.
+		name := msg.name
+		return s, func() tea.Msg { return ControllerSelectedMsg{Name: name} }
 
 	case ctrlInfoLoaded:
 		if msg.err != nil {
