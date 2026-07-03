@@ -1256,41 +1256,63 @@ func (s JobScreen) Update(msg tea.Msg) (JobScreen, tea.Cmd) {
 		return s, nil
 	}
 
+	// Overlay results (schedule/email/params/confirm) also arrive deferred,
+	// after the overlay hides itself — handle them before the visibility gates.
+	switch m := msg.(type) {
+	case components.ConfirmResultMsg:
+		if !m.Yes {
+			s.pendingBulkDelete = false
+			s.pendingDelete = ""
+			return s, nil
+		}
+		switch s.pendingAction {
+		case actDelete:
+			if s.pendingBulkDelete {
+				s.pendingBulkDelete = false
+				names := make([]string, 0, s.table.SelectedCount())
+				for k := range s.table.Selected() {
+					names = append(names, k)
+				}
+				s.table.ClearSelection()
+				return s, s.doBulkDelete(names)
+			}
+			name := s.pendingDelete
+			s.pendingDelete = ""
+			return s, s.doDelete(name)
+		case actStop:
+			return s, s.doStop(s.activeJob)
+		}
+		return s, nil
+	case components.ScheduleResultMsg:
+		if !m.Cancelled {
+			return s, s.doApplySchedule(s.activeJob, m.Cron)
+		}
+		return s, nil
+	case components.EmailResultMsg:
+		if !m.Cancelled {
+			return s, s.doApplyEmail(s.activeJob, m.Spec)
+		}
+		return s, nil
+	case components.ParamListResultMsg:
+		if !m.Cancelled {
+			return s, s.doApplyParams(s.activeJob, m.Params)
+		}
+		return s, nil
+	}
+
 	if s.schedule.Visible() {
 		var cmd tea.Cmd
 		s.schedule, cmd = s.schedule.Update(msg)
-		if _, ok := msg.(components.ScheduleResultMsg); !ok {
-			return s, cmd
-		}
-		// handle result
-		res := msg.(components.ScheduleResultMsg)
-		if !res.Cancelled {
-			return s, tea.Batch(cmd, s.doApplySchedule(s.activeJob, res.Cron))
-		}
 		return s, cmd
 	}
 	if s.email.Visible() {
 		var cmd tea.Cmd
 		s.email, cmd = s.email.Update(msg)
-		if _, ok := msg.(components.EmailResultMsg); !ok {
-			return s, cmd
-		}
-		res := msg.(components.EmailResultMsg)
-		if !res.Cancelled {
-			return s, tea.Batch(cmd, s.doApplyEmail(s.activeJob, res.Spec))
-		}
 		return s, cmd
 	}
 	if s.params.Visible() {
 		var cmd tea.Cmd
 		s.params, cmd = s.params.Update(msg)
-		if _, ok := msg.(components.ParamListResultMsg); !ok {
-			return s, cmd
-		}
-		res := msg.(components.ParamListResultMsg)
-		if !res.Cancelled {
-			return s, tea.Batch(cmd, s.doApplyParams(s.activeJob, res.Params))
-		}
 		return s, cmd
 	}
 	if s.agents.Visible() {
@@ -1340,31 +1362,6 @@ func (s JobScreen) Update(msg tea.Msg) (JobScreen, tea.Cmd) {
 	if s.confirm.Visible() {
 		var cmd tea.Cmd
 		s.confirm, cmd = s.confirm.Update(msg)
-		if res, ok := msg.(components.ConfirmResultMsg); ok {
-			if !res.Yes {
-				s.pendingBulkDelete = false
-				s.pendingDelete = ""
-				return s, cmd
-			}
-			switch s.pendingAction {
-			case actDelete:
-				if s.pendingBulkDelete {
-					s.pendingBulkDelete = false
-					names := make([]string, 0, s.table.SelectedCount())
-					for k := range s.table.Selected() {
-						names = append(names, k)
-					}
-					s.table.ClearSelection()
-					return s, tea.Batch(cmd, s.doBulkDelete(names))
-				}
-				name := s.pendingDelete
-				s.pendingDelete = ""
-				return s, tea.Batch(cmd, s.doDelete(name))
-			case actStop:
-				name := s.activeJob
-				return s, tea.Batch(cmd, s.doStop(name))
-			}
-		}
 		return s, cmd
 	}
 	if s.message.Visible() {
