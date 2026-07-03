@@ -128,10 +128,12 @@ func (s ControllerScreen) fetchControllers() tea.Cmd {
 }
 
 func (s ControllerScreen) doSelect(name, ctrlURL string) tea.Cmd {
-	database := s.db
+	database, dbPath := s.db, s.dbPath
 	return func() tea.Msg {
-		profileName := controller.GetActiveProfileName(database)
-		if err := controller.SetActiveController(database, profileName, name, ctrlURL); err != nil {
+		// Resolve the CJOC job URL to the controller's real base (follows the
+		// 302) before persisting — otherwise credential/job endpoints 404 under
+		// the CJOC job path.
+		if err := controller.ResolveAndSetActiveController(context.Background(), database, dbPath, name, ctrlURL); err != nil {
 			return ctrlSelectDone{err: err}
 		}
 		return ctrlSelectDone{name: name}

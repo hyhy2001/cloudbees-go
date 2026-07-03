@@ -49,6 +49,20 @@ func SetActiveController(database *sql.DB, profileName, name, ctrlURL string) er
 	return db.SetSetting(database, "active_controller_url."+profileName, ctrlURL)
 }
 
+// ResolveAndSetActiveController resolves a CJOC job URL (e.g. .../cjoc/job/Foo/)
+// to the controller's real base URL by following its 302 redirect, then
+// persists it as the active controller. Without this, credential/job endpoints
+// would be POSTed under the CJOC job path (404) instead of the controller base.
+// Mirrors the CLI `controller select` flow and the TS resolveControllerUrl step.
+func ResolveAndSetActiveController(ctx context.Context, database *sql.DB, dbPath, name, cjocURL string) error {
+	profileName := GetActiveProfileName(database)
+	resolved := cjocURL
+	if base, err := newClient(database, dbPath); err == nil {
+		resolved = resolveURL(ctx, base, cjocURL)
+	}
+	return SetActiveController(database, profileName, name, resolved)
+}
+
 // GetActiveProfileName returns the active profile name from the session.
 func GetActiveProfileName(database *sql.DB) string {
 	name, _ := session.GetActiveProfileName(database)
