@@ -11,10 +11,11 @@ import (
 // ConfirmResultMsg carries the user's yes/no answer.
 type ConfirmResultMsg struct{ Yes bool }
 
-// ConfirmModal shows a "Are you sure? [y/N]" prompt.
+// ConfirmModal shows a "Are you sure? [y/N]" prompt with a bordered chrome.
 type ConfirmModal struct {
 	Title   string
 	Body    string
+	Width   int // optional terminal width for border sizing
 	visible bool
 }
 
@@ -24,6 +25,9 @@ func (m *ConfirmModal) Show(title, body string) {
 	m.Body = body
 	m.visible = true
 }
+
+// SetWidth stores the terminal width for border sizing.
+func (m *ConfirmModal) SetWidth(w int) { m.Width = w }
 
 // Hide dismisses the modal.
 func (m *ConfirmModal) Hide() { m.visible = false }
@@ -52,30 +56,31 @@ func (m ConfirmModal) Update(msg tea.Msg) (ConfirmModal, tea.Cmd) {
 	return m, nil
 }
 
-// View renders the confirm modal.
+// View renders the confirm modal with a danger-coloured rounded border.
 func (m ConfirmModal) View() string {
 	if !m.visible {
 		return ""
 	}
-	var sb strings.Builder
-	sb.WriteString(theme.StyleWarning.Render(theme.SymWarn + " " + m.Title))
+	var inner strings.Builder
+	inner.WriteString(theme.StyleWarning.Render(theme.SymWarn + " " + m.Title))
 	if m.Body != "" {
-		sb.WriteString("\n")
-		sb.WriteString(theme.StyleNormal.Render(m.Body))
+		inner.WriteString("\n")
+		inner.WriteString(theme.StyleNormal.Render(m.Body))
 	}
-	sb.WriteString("\n")
-	sb.WriteString(theme.StyleDim.Render("Are you sure? [") +
+	inner.WriteString("\n")
+	inner.WriteString(theme.StyleDim.Render("Are you sure? [") +
 		theme.StyleDanger.Render("y") +
 		theme.StyleDim.Render("/") +
 		theme.StyleSuccess.Render("N") +
 		theme.StyleDim.Render("]"))
-	return sb.String()
+	return theme.BorderBox(inner.String(), "danger", m.Width)
 }
 
 // MessageModal shows informational text, dismissed with any key.
 type MessageModal struct {
 	Title   string
 	Body    string
+	Width   int // optional terminal width for border sizing
 	visible bool
 }
 
@@ -85,6 +90,9 @@ func (m *MessageModal) Show(title, body string) {
 	m.Body = body
 	m.visible = true
 }
+
+// SetWidth stores the terminal width for border sizing.
+func (m *MessageModal) SetWidth(w int) { m.Width = w }
 
 // Hide dismisses the modal.
 func (m *MessageModal) Hide() { m.visible = false }
@@ -103,18 +111,18 @@ func (m MessageModal) Update(msg tea.Msg) (MessageModal, tea.Cmd) {
 	return m, nil
 }
 
-// View renders the message modal.
+// View renders the message modal with a rounded info border.
 func (m MessageModal) View() string {
 	if !m.visible {
 		return ""
 	}
-	var sb strings.Builder
-	sb.WriteString(theme.StyleKeyHint.Render(theme.SymArrow + " " + m.Title))
+	var inner strings.Builder
+	inner.WriteString(theme.StyleKeyHint.Render(theme.SymArrow + " " + m.Title))
 	if m.Body != "" {
-		sb.WriteString("\n")
-		sb.WriteString(theme.StyleNormal.Render(m.Body))
+		inner.WriteString("\n")
+		inner.WriteString(theme.StyleNormal.Render(m.Body))
 	}
-	sb.WriteString("\n")
-	sb.WriteString(theme.StyleDim.Render("(press any key to close)"))
-	return sb.String()
+	inner.WriteString("\n")
+	inner.WriteString(theme.StyleDim.Render("(press any key to close)"))
+	return theme.BorderBox(inner.String(), "info", m.Width)
 }

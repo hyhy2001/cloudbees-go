@@ -244,6 +244,41 @@ func BuildBasicToken(username, token string) string {
 	return base64.StdEncoding.EncodeToString([]byte(raw))
 }
 
+// HasToken reports whether a stored (encrypted) token exists for the profile.
+// Lighter than LoadToken — no decryption, just presence.
+func HasToken(db *sql.DB, profileName string) bool {
+	var enc string
+	err := db.QueryRow(`SELECT value FROM settings WHERE key=?`, "token:"+profileName).Scan(&enc)
+	return err == nil
+}
+
+// ClearToken logs a profile out: it removes the stored token and the profile's
+// active-controller selection, but keeps the profile row so it can log back in.
+// If the cleared profile was active, the active pointer moves to another
+// profile that still has a token, or is dropped when none remain.
+func ClearToken(db *sql.DB, profileName string) error {
+	if _, err := db.Exec(`DELETE FROM settings WHERE key IN (?, ?, ?)`,
+		"token:"+profileName,
+		"active_controller."+profileName,
+		"active_controller_url."+profileName,
+	); err != nil {
+		return err
+	}
+	active, _ := GetActiveProfileName(db)
+	if active != profileName {
+		return nil
+	}
+	// Repoint active_profile at the next logged-in profile, if any.
+	profiles, _ := ListProfiles(db)
+	for _, p := range profiles {
+		if p.Name != profileName && HasToken(db, p.Name) {
+			return SetActiveProfile(db, p.Name)
+		}
+	}
+	_, err := db.Exec(`DELETE FROM settings WHERE key='active_profile'`)
+	return err
+}
+
 // LoadSession returns the active profile + decoded basic token.
 func LoadSession(db *sql.DB, dbPath string) (*Session, error) {
 	name, err := GetActiveProfileName(db)

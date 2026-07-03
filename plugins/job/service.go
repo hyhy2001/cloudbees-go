@@ -407,3 +407,130 @@ func StreamBuildLog(ctx context.Context, client *api.Client, name string, buildN
 	hasMore = resp.Header.Get("X-More-Data") == "true"
 	return text, newOffset, hasMore, nil
 }
+
+// StreamLastBuildLog fetches progressive log text for the job's last build.
+func StreamLastBuildLog(ctx context.Context, client *api.Client, name string, start int64) (text string, newOffset int64, hasMore bool, err error) {
+	path := fmt.Sprintf("/job/%s/lastBuild/logText/progressiveText?start=%d", JobPathSegments(name), start)
+	resp, err := client.Do(ctx, "GET", path, nil, "")
+	if err != nil {
+		return "", start, false, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		b, _ := io.ReadAll(resp.Body)
+		return "", start, false, fmt.Errorf("log stream: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+	}
+	b, _ := io.ReadAll(resp.Body)
+	text = string(b)
+	newOffset = start + int64(len(b))
+	if v := resp.Header.Get("X-Text-Size"); v != "" {
+		if n, e := strconv.ParseInt(v, 10, 64); e == nil {
+			newOffset = n
+		}
+	}
+	hasMore = resp.Header.Get("X-More-Data") == "true"
+	return text, newOffset, hasMore, nil
+}
+
+// ListJobsInFolder lists jobs directly under folder (non-recursive). Use "" for root.
+func ListJobsInFolder(ctx context.Context, client *api.Client, folder string) ([]JobDTO, error) {
+	return listJobsAt(ctx, client, folder)
+}
+
+// QueueItem is a pending build in the Jenkins queue. TaskURL matches JobDTO.URL
+// (the reliable join key — names collide across folders).
+type QueueItem struct {
+	ID      int
+	TaskURL string
+	Why     string
+	Stuck   bool
+}
+
+// GetJobParamDefs fetches a job's config.xml and returns its build-parameter
+// definitions (name + default). Empty when the job has no parameters. Used by
+// the TUI run flow to prompt for parameter values before triggering a build.
+func GetJobParamDefs(ctx context.Context, client *api.Client, name string) ([]StringParamDef, error) {
+	xmlStr, err := GetJobConfigXML(ctx, client, name)
+	if err != nil {
+		return nil, err
+	}
+	return ParamDefsFromStrings(extractParamDefs(xmlStr)), nil
+}
+
+// ListQueue fetches pending builds from /queue/api/json. Best-effort: returns
+// an empty slice (not an error) on failure so the caller can render normally.
+func ListQueue(ctx context.Context, client *api.Client) []QueueItem {
+	var raw struct {
+		Items []struct {
+			ID    int    `json:"id"`
+			Why   string `json:"why"`
+			Stuck bool   `json:"stuck"`
+			Task  struct {
+				URL string `json:"url"`
+			} `json:"task"`
+		} `json:"items"`
+	}
+	tree := "items[id,why,stuck,task[name,url]]"
+	if err := client.GetJSON(ctx, "/queue/api/json?tree="+url.QueryEscape(tree), &raw); err != nil {
+		return nil
+	}
+	out := make([]QueueItem, 0, len(raw.Items))
+	for _, it := range raw.Items {
+		out = append(out, QueueItem{ID: it.ID, TaskURL: it.Task.URL, Why: it.Why, Stuck: it.Stuck})
+	}
+	return out
+}
+
+// GetPipelineScript fetches the Jenkinsfile/script body for a pipeline job.
+// Returns "" when not found (non-pipeline job or no script configured).
+func GetPipelineScript(ctx context.Context, client *api.Client, name string) (string, error) {
+	xml, err := GetJobConfigXML(ctx, client, name)
+	if err != nil {
+		return "", err
+	}
+	// Extract <script>…</script> from the pipeline config XML.
+	const open, close = "<script>", "</script>"
+	start := strings.Index(xml, open)
+	if start < 0 {
+		return "", nil
+	}
+	start += len(open)
+	end := strings.Index(xml[start:], close)
+	if end < 0 {
+		return xml[start:], nil
+	}
+	return xml[start : start+end], nil
+}
+
+// CopyJob copies src to dst (Jenkins copy-from API).
+func CopyJob(ctx context.Context, client *api.Client, src, dst string) error {
+	path := fmt.Sprintf("/createItem?name=%s&mode=copy&from=%s",
+		url.QueryEscape(dst), url.QueryEscape(src))
+	resp, err := client.Do(ctx, "POST", path, nil, "")
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("copy job: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+	}
+	return nil
+}
+
+// MoveJob moves src to dst folder using the job-dsl moveJob approach.
+// dst is the fully-qualified destination path (folder/newname).
+func MoveJob(ctx context.Context, client *api.Client, src, dst string) error {
+	path := fmt.Sprintf("/job/%s/move/move?destination=%%2F%s",
+		JobPathSegments(src), url.QueryEscape(strings.ReplaceAll(dst, "/", "/")))
+	resp, err := client.Do(ctx, "POST", path, nil, "")
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("move job: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+	}
+	return nil
+}

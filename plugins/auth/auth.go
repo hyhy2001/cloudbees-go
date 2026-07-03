@@ -224,6 +224,56 @@ func deleteCmd(db *sql.DB) *cobra.Command {
 	return cmd
 }
 
+// Login validates credentials, then saves the profile, token, and marks it
+// active. Used by the TUI login modal. profileName defaults to "default".
+func Login(db *sql.DB, dbPath, serverURL, username, token, profileName string, insecure bool) error {
+	if profileName == "" {
+		profileName = "default"
+	}
+	serverURL = strings.TrimRight(serverURL, "/")
+	if err := validateCredentials(serverURL, username, token, insecure); err != nil {
+		return err
+	}
+	if err := session.SaveProfile(db, profileName, serverURL, username, profileName == "default"); err != nil {
+		return err
+	}
+	if err := session.SaveToken(db, dbPath, profileName, token); err != nil {
+		return err
+	}
+	if err := session.SetActiveProfile(db, profileName); err != nil {
+		return err
+	}
+	if insecure {
+		_ = session.SetInsecureTLS(db, profileName, true)
+	}
+	return nil
+}
+
+// Logout clears the active session for a profile (defaults to the active one),
+// keeping the profile row so the user can log back in.
+func Logout(db *sql.DB, profileName string) error {
+	if profileName == "" {
+		var err error
+		profileName, err = session.GetActiveProfileName(db)
+		if err != nil {
+			return err
+		}
+	}
+	return session.ClearToken(db, profileName)
+}
+
+// SwitchProfile points the active-profile pointer at a saved, logged-in
+// profile. Returns an error if the profile has no stored token.
+func SwitchProfile(db *sql.DB, profileName string) error {
+	if _, err := session.GetProfile(db, profileName); err != nil {
+		return fmt.Errorf("profile '%s' not found", profileName)
+	}
+	if !session.HasToken(db, profileName) {
+		return fmt.Errorf("no session for profile '%s'", profileName)
+	}
+	return session.SetActiveProfile(db, profileName)
+}
+
 // CurrentSession is a helper for other plugins to get the active session.
 func CurrentSession(db *sql.DB, dbPath string) (*session.Session, error) {
 	s, err := session.LoadSession(db, dbPath)

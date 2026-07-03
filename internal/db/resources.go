@@ -63,3 +63,22 @@ func SetSetting(db *sql.DB, key, value string) error {
 		key, value)
 	return err
 }
+
+// GetScopeShowAll reads the persisted Mine/All filter for a resource type.
+// Defaults to true (All) when unset — mirrors TS getScopeShowAll.
+func GetScopeShowAll(db *sql.DB, resourceType string) bool {
+	v, ok, _ := GetSetting(db, "scope.showall."+resourceType)
+	if !ok {
+		return true
+	}
+	return v == "1"
+}
+
+// SetScopeShowAll persists the Mine/All filter for a resource type.
+func SetScopeShowAll(db *sql.DB, resourceType string, showAll bool) error {
+	val := "0"
+	if showAll {
+		val = "1"
+	}
+	return SetSetting(db, "scope.showall."+resourceType, val)
+}

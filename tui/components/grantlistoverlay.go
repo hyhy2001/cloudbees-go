@@ -35,6 +35,7 @@ type GrantListOverlay struct {
 	Loaded     bool        // distinguishes nil-because-loading from nil-because-empty
 	EmptyText  string
 	AddHint    string
+	Width      int // terminal width for border sizing
 
 	cursor  int
 	visible bool
@@ -149,5 +150,5 @@ func (g GrantListOverlay) View() string {
 
 	sb.WriteString("\n")
 	sb.WriteString(theme.StyleDim.Render("↑↓ move  ·  a " + g.AddHint + "  ·  d revoke  ·  r refresh  ·  Esc back"))
-	return sb.String()
+	return theme.BorderBox(sb.String(), "info", g.Width)
 }

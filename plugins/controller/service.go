@@ -49,6 +49,20 @@ func SetActiveController(database *sql.DB, profileName, name, ctrlURL string) er
 	return db.SetSetting(database, "active_controller_url."+profileName, ctrlURL)
 }
 
+// ResolveAndSetActiveController resolves a CJOC job URL (e.g. .../cjoc/job/Foo/)
+// to the controller's real base URL by following its 302 redirect, then
+// persists it as the active controller. Without this, credential/job endpoints
+// would be POSTed under the CJOC job path (404) instead of the controller base.
+// Mirrors the CLI `controller select` flow and the TS resolveControllerUrl step.
+func ResolveAndSetActiveController(ctx context.Context, database *sql.DB, dbPath, name, cjocURL string) error {
+	profileName := GetActiveProfileName(database)
+	resolved := cjocURL
+	if base, err := newClient(database, dbPath); err == nil {
+		resolved = resolveURL(ctx, base, cjocURL)
+	}
+	return SetActiveController(database, profileName, name, resolved)
+}
+
 // GetActiveProfileName returns the active profile name from the session.
 func GetActiveProfileName(database *sql.DB) string {
 	name, _ := session.GetActiveProfileName(database)
@@ -148,11 +162,12 @@ func GetControllerCapabilities(ctx context.Context, database *sql.DB, cjocClient
 // Fields default to zero values on a failed sub-request rather than failing
 // the whole call.
 type Info struct {
-	Class           string
-	NodeDescription string
-	NumExecutors    int
-	UserID          string
-	UserFullName    string
+	Class            string
+	NodeDescription  string
+	NumExecutors     int
+	NumFreeExecutors int
+	UserID           string
+	UserFullName     string
 }
 
 // GetControllerInfo fetches basic controller + current-user identity info,
@@ -160,7 +175,7 @@ type Info struct {
 func GetControllerInfo(ctx context.Context, client *api.Client) Info {
 	var info Info
 	var wg sync.WaitGroup
-	wg.Add(2)
+	wg.Add(3)
 	go func() {
 		defer wg.Done()
 		var raw struct {
@@ -180,6 +195,18 @@ func GetControllerInfo(ctx context.Context, client *api.Client) Info {
 		}
 		if err := client.GetJSON(ctx, "/me/api/json?tree=id,fullName", &raw); err == nil {
 			info.UserID, info.UserFullName = raw.ID, raw.FullName
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		var raw struct {
+			BusyExecutors  int `json:"busyExecutors"`
+			TotalExecutors int `json:"totalExecutors"`
+		}
+		if err := client.GetJSON(ctx, "/computer/api/json?tree=busyExecutors,totalExecutors", &raw); err == nil {
+			if free := raw.TotalExecutors - raw.BusyExecutors; free >= 0 {
+				info.NumFreeExecutors = free
+			}
 		}
 	}()
 	wg.Wait()

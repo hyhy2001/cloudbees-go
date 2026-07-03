@@ -76,3 +76,37 @@ func XMLEscape(s string) string {
 func SetXMLElement(xmlStr, tag, value string) string {
 	return setXMLElement(xmlStr, tag, value)
 }
+
+// CreateUsernamePasswordCredential creates a Username+Password credential.
+func CreateUsernamePasswordCredential(ctx context.Context, client *api.Client, id, username, password, desc, scope, store, sessionUsername string) error {
+	if scope == "" {
+		scope = "GLOBAL"
+	}
+	seg := getUserSeg(sessionUsername, store)
+	xml := buildUsernamePasswordXML(id, username, password, desc, scope)
+	return client.PostXML(ctx, seg+"/createCredentials", xml)
+}
+
+// CreateSecretTextCredential creates a SecretText credential.
+func CreateSecretTextCredential(ctx context.Context, client *api.Client, id, secret, desc, scope, store, sessionUsername string) error {
+	if scope == "" {
+		scope = "GLOBAL"
+	}
+	seg := getUserSeg(sessionUsername, store)
+	xml := buildSecretTextXML(id, secret, desc, scope)
+	return client.PostXML(ctx, seg+"/createCredentials", xml)
+}
+
+// UpdateCredentialField patches a single XML element value in an existing
+// credential's config.xml. Suitable for description, username, etc. (Jenkins
+// never echoes passwords, so password updates must come from the original XML
+// template rather than patching the existing config).
+func UpdateCredentialField(ctx context.Context, client *api.Client, credID, tag, value, sessionUsername, store string) error {
+	xmlStr, err := getCredentialXML(client, credID, sessionUsername, store)
+	if err != nil {
+		return err
+	}
+	updated := setXMLElement(xmlStr, tag, xmlEscape(value))
+	seg := getUserSeg(sessionUsername, store)
+	return client.PostXML(ctx, seg+"/credential/"+url.PathEscape(credID)+"/config.xml", updated)
+}
