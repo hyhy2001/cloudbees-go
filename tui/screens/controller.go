@@ -5,7 +5,9 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 
+	"github.com/charmbracelet/lipgloss"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"bee/internal/api"
@@ -14,6 +16,9 @@ import (
 	"bee/tui/components"
 	"bee/tui/theme"
 )
+
+// ctrlAutoRefreshMsg is the tick for the controller screen's auto-refresh.
+type ctrlAutoRefreshMsg struct{}
 
 // ctrlEntry is a single controller row.
 type ctrlEntry struct {
@@ -37,22 +42,27 @@ type ctrlSelectDone struct {
 type ctrlInfoLoaded struct {
 	name string
 	caps controller.Capabilities
+	info controller.Info
 	err  error
 }
 
 // ControllerScreen is the TUI screen for listing/selecting controllers.
 type ControllerScreen struct {
-	db         *sql.DB
-	dbPath     string
-	table      components.DataTable
-	search     components.SearchBox
-	detail     components.MessageModal
-	loading    bool
-	err        error
-	ctrls      []ctrlEntry
-	width      int
-	height     int
-	activeName string // currently selected controller name
+	db          *sql.DB
+	dbPath      string
+	table       components.DataTable
+	search      components.SearchBox
+	detail      components.MessageModal
+	loading     bool
+	err         error
+	ctrls       []ctrlEntry
+	width       int
+	height      int
+	activeName  string // currently selected controller name
+	autoRefresh bool
+
+	// inline detail panel per highlighted controller
+	infoCache map[string]ctrlInfoLoaded
 }
 
 // NewControllerScreen creates a new ControllerScreen.
@@ -70,6 +80,7 @@ func NewControllerScreen(database *sql.DB, dbPath string, activeName string) Con
 		table:      components.NewDataTable(cols),
 		loading:    true,
 		activeName: activeName,
+		infoCache:  make(map[string]ctrlInfoLoaded),
 	}
 }
 
@@ -133,8 +144,13 @@ func (s ControllerScreen) doFetchInfo(name, ctrlURL string) tea.Cmd {
 		if err != nil {
 			return ctrlInfoLoaded{name: name, err: err}
 		}
-		return ctrlInfoLoaded{name: name, caps: caps}
+		info := controller.GetControllerInfo(context.Background(), client)
+		return ctrlInfoLoaded{name: name, caps: caps, info: info}
 	}
+}
+
+func ctrlScheduleAutoRefresh() tea.Cmd {
+	return tea.Tick(10*time.Second, func(_ time.Time) tea.Msg { return ctrlAutoRefreshMsg{} })
 }
 
 // filteredControllers applies the search box filter to the full controller list.
@@ -251,11 +267,35 @@ func (s ControllerScreen) Update(msg tea.Msg) (ControllerScreen, tea.Cmd) {
 			s.detail.Show("Error", msg.err.Error())
 			return s, nil
 		}
-		body := fmt.Sprintf(
-			"Type: %s\nCan create job:  %v\nCan create node: %v\nCan create cred: %v",
-			msg.caps.TypeLabel, msg.caps.CanCreateJob, msg.caps.CanCreateNode, msg.caps.CanCreateCred,
-		)
-		s.detail.Show("Controller: "+msg.name, body)
+		s.infoCache[msg.name] = msg
+		var b strings.Builder
+		b.WriteString("Type:  " + msg.caps.TypeLabel + "\n")
+		if msg.info.NumExecutors > 0 {
+			b.WriteString(fmt.Sprintf("Executors:  %d\n", msg.info.NumExecutors))
+		}
+		if msg.info.NodeDescription != "" {
+			b.WriteString("Mode:  " + msg.info.NodeDescription + "\n")
+		}
+		if msg.info.UserID != "" {
+			name := msg.info.UserFullName
+			if name == "" {
+				name = msg.info.UserID
+			}
+			b.WriteString("User:  " + name + " (" + msg.info.UserID + ")\n")
+		}
+		perm := func(label string, ok bool) string {
+			sym := theme.SymFail
+			col := theme.ColorError
+			if ok {
+				sym = theme.SymOnline
+				col = theme.ColorSuccess
+			}
+			return lipgloss.NewStyle().Foreground(lipgloss.Color(col)).Render(sym) + " " + label
+		}
+		b.WriteString(perm("create job", msg.caps.CanCreateJob) + "\n")
+		b.WriteString(perm("create node", msg.caps.CanCreateNode) + "\n")
+		b.WriteString(perm("create credential", msg.caps.CanCreateCred))
+		s.detail.Show("Controller: "+msg.name, b.String())
 		return s, nil
 
 	case tea.WindowSizeMsg:
@@ -282,10 +322,20 @@ func (s ControllerScreen) Update(msg tea.Msg) (ControllerScreen, tea.Cmd) {
 				return s, nil
 			}
 			return s, s.doSelect(c.Name, c.URL)
+		case "f":
+			s.autoRefresh = !s.autoRefresh
+			if s.autoRefresh {
+				return s, ctrlScheduleAutoRefresh()
+			}
+			return s, nil
 		case "r":
 			s.loading = true
 			return s, s.fetchControllers()
 		}
+	}
+
+	if _, ok := msg.(ctrlAutoRefreshMsg); ok && s.autoRefresh {
+		return s, tea.Batch(s.fetchControllers(), ctrlScheduleAutoRefresh())
 	}
 
 	var cmd tea.Cmd
@@ -299,11 +349,14 @@ func (s ControllerScreen) View() string {
 		return s.detail.View()
 	}
 	var sb strings.Builder
-	sb.WriteString(theme.StyleTitle.Render(theme.SymGear + " Controllers"))
+	title := theme.StyleTitle.Render(theme.SymGear + " Controllers")
 	if s.activeName != "" {
-		sb.WriteString("  " + theme.StyleSuccess.Render("["+s.activeName+"]"))
+		title += "  " + theme.StyleSuccess.Render("["+s.activeName+"]")
 	}
-	sb.WriteString("\n")
+	if s.autoRefresh {
+		title += " " + theme.StyleDim.Render("[auto]")
+	}
+	sb.WriteString(title + "\n")
 	if s.loading {
 		sb.WriteString(theme.StyleDim.Render(theme.SymLoading + " Loading controllers..."))
 		return sb.String()
@@ -336,6 +389,18 @@ func (s ControllerScreen) View() string {
 		}
 		sb.WriteString("\n")
 		sb.WriteString(theme.StyleDim.Render("type ") + theme.StyleBlue.Render(typeLabelController(c.Class)))
+		if info, ok := s.infoCache[c.Name]; ok && info.err == nil {
+			if info.info.NumExecutors > 0 {
+				sb.WriteString(theme.StyleDim.Render(fmt.Sprintf("   exec %d", info.info.NumExecutors)))
+			}
+			if info.info.UserID != "" {
+				name := info.info.UserFullName
+				if name == "" {
+					name = info.info.UserID
+				}
+				sb.WriteString(theme.StyleDim.Render("   user ") + name)
+			}
+		}
 		sb.WriteString("\n")
 		if c.URL != "" {
 			sb.WriteString(theme.StyleSubtle.Render(c.URL))
@@ -347,6 +412,6 @@ func (s ControllerScreen) View() string {
 		}
 	}
 
-	sb.WriteString(theme.StyleDim.Render("Enter info  ·  s select  ·  ↑↓ move  ·  r refresh  ·  / search"))
+	sb.WriteString(theme.StyleDim.Render("Enter info  ·  s select  ·  f auto-refresh  ·  ↑↓ move  ·  r refresh  ·  / search"))
 	return sb.String()
 }

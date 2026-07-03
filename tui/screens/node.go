@@ -19,6 +19,19 @@ import (
 // nodeAutoRefreshMsg is the tick for the node screen's auto-refresh.
 type nodeAutoRefreshMsg struct{}
 
+// nodeGrantsLoaded carries approved folders for GrantListOverlay.
+type nodeGrantsLoaded struct {
+	nodeName string
+	items    []components.GrantItem
+	err      error
+}
+
+// nodeGrantActionDone reports result of approve/revoke.
+type nodeGrantActionDone struct {
+	nodeName string
+	err      error
+}
+
 // nodeEntry is a single node row.
 type nodeEntry struct {
 	Name        string
@@ -68,6 +81,9 @@ type NodeScreen struct {
 
 	autoRefresh    bool
 	nodeFormIntent string // "create" | "edit"
+	grantList      components.GrantListOverlay
+	grantNodeName  string // node currently shown in grantList
+	approveInput   formOverlay // single-field "folder name" form for adding approval
 
 	// detail panel: config.xml digest for the highlighted node
 	nodeConfig      *nodepkg.NodeConfig
@@ -100,7 +116,7 @@ func (s NodeScreen) Init() tea.Cmd {
 // InputCaptured reports whether any overlay is capturing input.
 func (s NodeScreen) InputCaptured() bool {
 	return s.modal.Visible() || s.detail.Visible() || s.search.Editing() ||
-		s.form.Visible() || s.menu.Visible()
+		s.form.Visible() || s.menu.Visible() || s.grantList.Visible() || s.approveInput.Visible()
 }
 
 func (s NodeScreen) fetchNodes() tea.Cmd {
@@ -189,6 +205,49 @@ func nodeScheduleAutoRefresh() tea.Cmd {
 	return tea.Tick(10*time.Second, func(_ time.Time) tea.Msg { return nodeAutoRefreshMsg{} })
 }
 
+func (s NodeScreen) fetchNodeGrants(nodeName string) tea.Cmd {
+	db, dbPath := s.db, s.dbPath
+	return func() tea.Msg {
+		client, err := controller.GetActiveControllerClient(db, dbPath)
+		if err != nil {
+			return nodeGrantsLoaded{nodeName: nodeName, err: err}
+		}
+		approved, err := nodepkg.ListApprovedFolders(context.Background(), client, nodeName)
+		if err != nil {
+			return nodeGrantsLoaded{nodeName: nodeName, err: err}
+		}
+		items := make([]components.GrantItem, len(approved))
+		for i, a := range approved {
+			items[i] = components.GrantItem{Label: a.FolderName, ID: a.TokenID}
+		}
+		return nodeGrantsLoaded{nodeName: nodeName, items: items}
+	}
+}
+
+func (s NodeScreen) doApproveFolder(nodeName, folderName string) tea.Cmd {
+	db, dbPath := s.db, s.dbPath
+	return func() tea.Msg {
+		client, err := controller.GetActiveControllerClient(db, dbPath)
+		if err != nil {
+			return nodeGrantActionDone{nodeName: nodeName, err: err}
+		}
+		err = nodepkg.ApproveFolder(context.Background(), client, nodeName, folderName)
+		return nodeGrantActionDone{nodeName: nodeName, err: err}
+	}
+}
+
+func (s NodeScreen) doRevokeGrant(nodeName, tokenID string) tea.Cmd {
+	db, dbPath := s.db, s.dbPath
+	return func() tea.Msg {
+		client, err := controller.GetActiveControllerClient(db, dbPath)
+		if err != nil {
+			return nodeGrantActionDone{nodeName: nodeName, err: err}
+		}
+		err = nodepkg.DeleteAgentToken(context.Background(), client, nodeName, tokenID)
+		return nodeGrantActionDone{nodeName: nodeName, err: err}
+	}
+}
+
 // fetchNodeConfig loads and parses a node's config.xml for the detail panel.
 func (s NodeScreen) fetchNodeConfig(name string) tea.Cmd {
 	db, dbPath := s.db, s.dbPath
@@ -253,6 +312,36 @@ func (s NodeScreen) current() *nodeEntry {
 
 // Update handles messages and key input.
 func (s NodeScreen) Update(msg tea.Msg) (NodeScreen, tea.Cmd) {
+	if s.approveInput.Visible() {
+		var cmd tea.Cmd
+		s.approveInput, cmd = s.approveInput.Update(msg)
+		if sub, ok := msg.(FormSubmitMsg); ok {
+			folderName := strGet(sub.Values, 0)
+			if folderName != "" {
+				return s, s.doApproveFolder(s.grantNodeName, folderName)
+			}
+		}
+		return s, cmd
+	}
+	if s.grantList.Visible() {
+		var cmd tea.Cmd
+		s.grantList, cmd = s.grantList.Update(msg)
+		switch m := msg.(type) {
+		case components.GrantAddMsg:
+			s.approveInput.Show("Approve Folder", []formField{
+				{Label: "Folder name", Required: true, Placeholder: "my-folder"},
+			})
+		case components.GrantRevokeMsg:
+			return s, s.doRevokeGrant(s.grantNodeName, m.Item.ID)
+		case components.GrantRefreshMsg:
+			s.grantList.SetItems(nil)
+			s.grantList.Loaded = false
+			return s, s.fetchNodeGrants(s.grantNodeName)
+		case components.GrantCloseMsg:
+			// already hidden by component
+		}
+		return s, cmd
+	}
 	if s.form.Visible() {
 		var cmd tea.Cmd
 		s.form, cmd = s.form.Update(msg)
@@ -295,6 +384,27 @@ func (s NodeScreen) Update(msg tea.Msg) (NodeScreen, tea.Cmd) {
 	}
 
 	switch msg := msg.(type) {
+	case nodeGrantsLoaded:
+		if msg.nodeName == s.grantNodeName {
+			if msg.err != nil {
+				s.grantList.SetItems([]components.GrantItem{})
+			} else {
+				s.grantList.SetItems(msg.items)
+			}
+		}
+		return s, nil
+
+	case nodeGrantActionDone:
+		if msg.err != nil {
+			s.detail.Show("Error", msg.err.Error())
+		} else if s.grantList.Visible() {
+			// refresh the grant list
+			s.grantList.Loaded = false
+			s.grantList.Items = nil
+			return s, s.fetchNodeGrants(s.grantNodeName)
+		}
+		return s, nil
+
 	case nodesLoaded:
 		s.loading = false
 		s.err = msg.err
@@ -350,6 +460,8 @@ func (s NodeScreen) Update(msg tea.Msg) (NodeScreen, tea.Cmd) {
 		s.detail.SetWidth(msg.Width)
 		s.form.width = msg.Width
 		s.menu.width = msg.Width
+		s.grantList.Width = msg.Width
+		s.approveInput.width = msg.Width
 		return s, nil
 
 	case tea.KeyMsg:
@@ -360,7 +472,7 @@ func (s NodeScreen) Update(msg tea.Msg) (NodeScreen, tea.Cmd) {
 		case "enter":
 			if c := s.current(); c != nil {
 				s.activeNode = c.Name
-				s.menu.Show("Node: "+c.Name, []string{"Edit", "Toggle Offline", "Delete"})
+				s.menu.Show("Node: "+c.Name, []string{"Edit", "Toggle Offline", "Manage Approvals", "Delete"})
 			}
 			return s, nil
 		case "ctrl+n":
@@ -376,6 +488,8 @@ func (s NodeScreen) Update(msg tea.Msg) (NodeScreen, tea.Cmd) {
 				{Label: "SSH Port", Value: "22"},
 				{Label: "Credential ID", Placeholder: "ssh-cred-id"},
 				{Label: "Availability", Value: "always", Placeholder: "always | demand"},
+				{Label: "In-demand Delay", Value: "0", Placeholder: "minutes (demand only)"},
+				{Label: "Idle Delay", Value: "1", Placeholder: "minutes (demand only)"},
 			})
 			return s, nil
 		case "ctrl+d":
@@ -477,7 +591,19 @@ func (s NodeScreen) handleNodeMenuSelect(idx int) (NodeScreen, tea.Cmd) {
 			s.action = "toggle"
 			s.modal.Show("Toggle offline", fmt.Sprintf("Toggle offline state of '%s'?", c.Name))
 		}
-	case 2: // Delete
+	case 2: // Manage Approvals
+		if c := s.current(); c != nil {
+			s.grantNodeName = c.Name
+			s.grantList.Show(
+				"Approved Folders — "+c.Name,
+				"Folders this agent is allowed to run jobs from",
+				"Folder",
+				"No approved folders yet.",
+				"approve folder",
+			)
+			return s, s.fetchNodeGrants(c.Name)
+		}
+	case 3: // Delete
 		if c := s.current(); c != nil {
 			s.pending = c.Name
 			s.action = "delete"
@@ -512,16 +638,30 @@ func (s NodeScreen) handleNodeFormSubmit(vals []string) tea.Cmd {
 		if len(vals) > 5 {
 			launcher = strings.TrimSpace(vals[5])
 		}
+		inDemand := 0
+		if len(vals) > 10 {
+			if n, err := strconv.Atoi(strings.TrimSpace(vals[10])); err == nil {
+				inDemand = n
+			}
+		}
+		idleDelay := 1
+		if len(vals) > 11 {
+			if n, err := strconv.Atoi(strings.TrimSpace(vals[11])); err == nil && n >= 0 {
+				idleDelay = n
+			}
+		}
 		opts := nodepkg.CreateNodeOpts{
-			RemoteDir:    strings.TrimSpace(vals[1]),
-			NumExecutors: exec,
-			Labels:       strGet(vals, 3),
-			Desc:         strGet(vals, 4),
-			LauncherType: launcher,
-			Host:         strGet(vals, 6),
-			Port:         port,
-			CredID:       strGet(vals, 8),
-			Availability: strGetDef(vals, 9, "always"),
+			RemoteDir:     strings.TrimSpace(vals[1]),
+			NumExecutors:  exec,
+			Labels:        strGet(vals, 3),
+			Desc:          strGet(vals, 4),
+			LauncherType:  launcher,
+			Host:          strGet(vals, 6),
+			Port:          port,
+			CredID:        strGet(vals, 8),
+			Availability:  strGetDef(vals, 9, "always"),
+			InDemandDelay: inDemand,
+			IdleDelay:     idleDelay,
 		}
 		return s.doCreateNode(opts, name)
 	case "edit":
@@ -582,6 +722,12 @@ func (s NodeScreen) handleNodeFormSubmit(vals []string) tea.Cmd {
 
 // View renders the node screen.
 func (s NodeScreen) View() string {
+	if s.approveInput.Visible() {
+		return s.approveInput.View()
+	}
+	if s.grantList.Visible() {
+		return s.grantList.View()
+	}
 	if s.form.Visible() {
 		return s.form.View()
 	}
