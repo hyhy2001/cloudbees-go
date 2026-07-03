@@ -77,6 +77,7 @@ type EmailBuilder struct {
 	editBuf  string
 	groovyOK bool
 	visible  bool
+	Width    int // terminal width for border sizing
 }
 
 // Show opens the builder. groovyAvailable disables keywords/regex rows
@@ -334,5 +335,5 @@ func (b EmailBuilder) View() string {
 		hint = "Enter save · Esc cancel edit"
 	}
 	sb.WriteString(theme.StyleDim.Render(hint))
-	return sb.String()
+	return theme.BorderBox(sb.String(), "info", b.Width)
 }

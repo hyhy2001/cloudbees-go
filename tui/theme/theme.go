@@ -99,6 +99,36 @@ var (
 			Foreground(lipgloss.Color(ColorDanger))
 )
 
+// BorderBox wraps content in a rounded lipgloss border with standard padding
+// (paddingX=1, no vertical padding), coloured according to severity:
+//   - "info"    → subtle border (default, most overlays)
+//   - "danger"  → danger red border (destructive confirm)
+//   - "warning" → warning yellow border
+//   - "success" → success green border
+//
+// Width is the outer column width (terminal width); pass 0 to let lipgloss
+// determine the width from content.
+func BorderBox(content, severity string, width int) string {
+	borderColor := ColorSubtle
+	switch severity {
+	case "danger":
+		borderColor = ColorDanger
+	case "warning":
+		borderColor = ColorWarning
+	case "success":
+		borderColor = ColorSuccess
+	}
+	s := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(borderColor)).
+		PaddingLeft(1).
+		PaddingRight(1)
+	if width > 0 {
+		s = s.Width(width - 4) // subtract border(2)+padding(2)
+	}
+	return s.Render(content)
+}
+
 // JobStatusLabel maps a Jenkins job color string to a short label + color hex.
 func JobStatusLabel(color string) (label, col string) {
 	running := len(color) > 6 && color[len(color)-6:] == "_anime"

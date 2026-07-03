@@ -36,6 +36,7 @@ type ParamListEditor struct {
 	field   paramField
 	buf     [3]string // name, defaultValue, description while editing
 	visible bool
+	Width   int // terminal width for border sizing
 }
 
 // Show opens the editor with initial rows (e.g. parsed from job.ParamDefsFromStrings).
@@ -214,7 +215,7 @@ func (e ParamListEditor) View() string {
 
 	sb.WriteString("\n")
 	sb.WriteString(theme.StyleDim.Render("↑/↓ move · Enter edit · Ctrl+n add · Ctrl+d delete · Ctrl+s save · Esc cancel"))
-	return sb.String()
+	return theme.BorderBox(sb.String(), "info", e.Width)
 }
 
 func (e ParamListEditor) viewRowEditor() string {
@@ -239,5 +240,5 @@ func (e ParamListEditor) viewRowEditor() string {
 	}
 	sb.WriteString("\n")
 	sb.WriteString(theme.StyleDim.Render("Tab/↑↓ move field · Enter save · Esc cancel"))
-	return sb.String()
+	return theme.BorderBox(sb.String(), "info", e.Width)
 }

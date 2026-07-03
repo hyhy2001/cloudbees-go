@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"bee/plugins/controller"
+	"bee/tui/components"
 	"bee/tui/screens"
 	"bee/tui/theme"
 )
@@ -66,12 +67,18 @@ type App struct {
 	height     int
 	quitting   bool
 	isOC       bool // true = server is Operations Center, show Controllers tab
+	help       components.HelpOverlay
+	cmdLog     components.CommandLog
+	toast      components.Toast
 }
 
 // activeInputCaptured reports whether the currently active screen owns an
 // overlay/form/menu that wants raw keys — in that case the app-global
 // tab-switch/digit-jump/quit bindings must not intercept the keystroke.
 func (a App) activeInputCaptured() bool {
+	if a.help.Visible() {
+		return true
+	}
 	switch a.allTabIndex() {
 	case 0:
 		return a.jobScreen.InputCaptured()
@@ -100,6 +107,50 @@ func NewApp(db *sql.DB, dbPath, version string) App {
 		sysScreen:  screens.NewSystemScreen(db, dbPath, version),
 	}
 	a.rebuildTabs(false)
+	a.help.Title = "Keyboard Shortcuts"
+	a.help.SetEntries(
+		[]string{"Global", "Jobs", "Nodes", "Credentials", "Controllers"},
+		[][]components.HelpEntry{
+			{
+				{Key: "←→ / Tab", Desc: "switch tab"},
+				{Key: "1–5", Desc: "jump to tab"},
+				{Key: "?", Desc: "toggle help"},
+				{Key: "L", Desc: "toggle command log"},
+				{Key: "^Q", Desc: "quit"},
+			},
+			{
+				{Key: "↑↓", Desc: "navigate"},
+				{Key: "/", Desc: "search"},
+				{Key: "Enter", Desc: "open menu"},
+				{Key: "^N", Desc: "new job"},
+				{Key: "^D", Desc: "delete"},
+				{Key: "r", Desc: "refresh"},
+			},
+			{
+				{Key: "↑↓", Desc: "navigate"},
+				{Key: "/", Desc: "search"},
+				{Key: "Enter", Desc: "open menu"},
+				{Key: "^N", Desc: "new node"},
+				{Key: "^D", Desc: "delete"},
+				{Key: "^O", Desc: "toggle offline"},
+				{Key: "r", Desc: "refresh"},
+			},
+			{
+				{Key: "↑↓", Desc: "navigate"},
+				{Key: "/", Desc: "search"},
+				{Key: "Enter", Desc: "open menu"},
+				{Key: "^N", Desc: "new credential"},
+				{Key: "^D", Desc: "delete"},
+				{Key: "r", Desc: "refresh"},
+			},
+			{
+				{Key: "↑↓", Desc: "navigate"},
+				{Key: "Enter", Desc: "view info"},
+				{Key: "s", Desc: "select controller"},
+				{Key: "r", Desc: "refresh"},
+			},
+		},
+	)
 	return a
 }
 
@@ -153,6 +204,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		a.width = msg.Width
 		a.height = msg.Height
+		a.help.Width = msg.Width
+		a.cmdLog.Width = msg.Width
+		a.toast.Width = msg.Width
 		a.jobScreen, _ = a.jobScreen.Update(msg)
 		a.nodeScreen, _ = a.nodeScreen.Update(msg)
 		a.credScreen, _ = a.credScreen.Update(msg)
@@ -167,6 +221,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "ctrl+q", "q", "Q", "ctrl+c":
 				a.quitting = true
 				return a, tea.Quit
+			case "?":
+				a.help.Toggle()
+				return a, nil
+			case "L":
+				a.cmdLog.Toggle()
+				return a, nil
 			case "tab", "right":
 				a.activeTab = (a.activeTab + 1) % len(a.tabs)
 				return a, nil
@@ -182,12 +242,20 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
+		// Route key to help overlay first when it is visible.
+		if a.help.Visible() {
+			a.help, _ = a.help.Update(msg)
+			return a, nil
+		}
 		return a.delegateKey(msg)
 	}
 
-	// Route non-key messages to all screens (async fetches).
+	// Route non-key messages to all screens (async fetches) and app-level components.
 	var cmds []tea.Cmd
 	var cmd tea.Cmd
+
+	a.toast, _ = a.toast.Update(msg)
+	a.cmdLog, _ = a.cmdLog.Update(msg)
 
 	a.jobScreen, cmd = a.jobScreen.Update(msg)
 	cmds = append(cmds, cmd)
@@ -245,6 +313,15 @@ func (a App) View() string {
 	if bodyHeight < 5 {
 		bodyHeight = 5
 	}
+
+	// Overlays take priority over the screen body when visible.
+	if v := a.help.View(); v != "" {
+		sb.WriteString(v)
+		sb.WriteString("\n")
+		sb.WriteString(renderStatusBar(a.allTabIndex(), a.width))
+		return sb.String()
+	}
+
 	body := a.activeScreenView()
 	lines := strings.Split(body, "\n")
 	if len(lines) > bodyHeight {
@@ -252,6 +329,16 @@ func (a App) View() string {
 	}
 	sb.WriteString(strings.Join(lines, "\n"))
 	sb.WriteString("\n")
+
+	// App-level chrome: toast and command log rendered below the body.
+	if v := a.toast.View(); v != "" {
+		sb.WriteString(v)
+		sb.WriteString("\n")
+	}
+	if v := a.cmdLog.View(); v != "" {
+		sb.WriteString(v)
+		sb.WriteString("\n")
+	}
 
 	// Status bar.
 	sb.WriteString(renderStatusBar(a.allTabIndex(), a.width))
