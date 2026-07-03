@@ -258,11 +258,13 @@ func GetActiveControllerClient(database *sql.DB, dbPath string) (*api.Client, er
 // resolveURL follows the CJOC 302 redirect to find the real controller URL,
 // stripping SSO suffixes (mirrors TS resolveControllerUrl).
 func resolveURL(ctx context.Context, client *api.Client, cjocURL string) string {
+	transport := client.HTTPClient.Transport
 	httpClient := &http.Client{
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse // stop at first redirect
 		},
-		Timeout: 10 * time.Second,
+		Transport: transport,
+		Timeout:   10 * time.Second,
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, cjocURL, nil)
 	if err != nil {
