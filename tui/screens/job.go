@@ -26,14 +26,17 @@ type jobEntry struct {
 	Color string
 	Desc  string
 	Build int
+	URL   string
+	Gone  bool // synthesized placeholder for a tracked job missing on the server
 }
 
 type jobsLoaded struct {
-	jobs    []jobEntry
-	folder  string // which folder these jobs belong to (empty = root)
-	tracked map[string]bool
-	baseURL string
-	err     error
+	jobs        []jobEntry
+	folder      string // which folder these jobs belong to (empty = root)
+	tracked     map[string]bool
+	baseURL     string
+	queueReason map[string]string // job URL (no trailing slash) → wait reason
+	err         error
 }
 
 type jobOpDone struct {
@@ -86,6 +89,7 @@ type formField struct {
 	Value       string
 	Placeholder string
 	Required    bool
+	Password    bool // mask input with •
 	// Options non-nil → cycle-select, not free-text.
 	Options []string
 }
@@ -225,6 +229,9 @@ func (f formOverlay) View() string {
 		}
 		val := f.buf[i]
 		display := val
+		if fl.Password {
+			display = strings.Repeat("•", len([]rune(val)))
+		}
 		if len(fl.Options) > 0 {
 			if on {
 				display = theme.StyleDim.Render(theme.SymArrow+" ") + val + theme.StyleDim.Render(" "+theme.SymArrow)
@@ -388,8 +395,9 @@ type JobScreen struct {
 	activeJob     string
 	activeJobType string // FS / PL / FD
 	// for confirm, remember what it is confirming
-	pendingDelete string
-	pendingAction jobAction
+	pendingDelete     string
+	pendingAction     jobAction
+	pendingBulkDelete bool // confirm targets the multi-selection, not pendingDelete
 	// for "add agent" form, remember the folder
 	agentFolder string
 
@@ -410,6 +418,16 @@ type JobScreen struct {
 	showAll bool
 	tracked map[string]bool
 	baseURL string // active controller URL for track/untrack
+
+	// run-with-params: parameter names in form-field order (parallel to the
+	// run-params form's values), so a submit maps back to name→value.
+	runParamNames []string
+
+	// auto-refresh backoff (5s→60s), reset on user action / data load
+	refresh components.AutoRefresh
+
+	// build-queue wait reasons keyed by job URL (trailing slash stripped)
+	queueReason map[string]string
 }
 
 // NewJobScreen constructs a JobScreen.
@@ -417,15 +435,19 @@ func NewJobScreen(db *sql.DB, dbPath string) JobScreen {
 	cols := []components.Column{
 		{Header: "Status", Width: 12},
 		{Header: "T", Width: 3},
-		{Header: "Name", Width: 42, Flex: true},
+		{Header: "Name", Width: 40, Flex: true},
 		{Header: "Build #", Width: 9},
-		{Header: "Description", Width: 24, Flex: true},
+		{Header: "Reason", Width: 18},
+		{Header: "Description", Width: 22, Flex: true},
 	}
+	tbl := components.NewDataTable(cols)
+	tbl.SetSelectable(true)
 	return JobScreen{
 		db:                 db,
 		dbPath:             dbPath,
-		table:              components.NewDataTable(cols),
+		table:              tbl,
 		loading:            true,
+		showAll:            internaldb.GetScopeShowAll(db, "job"),
 		detailSummaryCache: make(map[string]jobo.ConfigSummary),
 	}
 }
@@ -466,7 +488,7 @@ func (s JobScreen) fetchJobs() tea.Cmd {
 		}
 		entries := make([]jobEntry, 0, len(rawJobs))
 		for _, j := range rawJobs {
-			e := jobEntry{Name: j.Name, Class: j.Class, Color: j.Color, Desc: j.Description}
+			e := jobEntry{Name: j.Name, Class: j.Class, Color: j.Color, Desc: j.Description, URL: j.URL}
 			if j.LastBuild != nil {
 				e.Build = j.LastBuild.Number
 			}
@@ -478,7 +500,13 @@ func (s JobScreen) fetchJobs() tea.Cmd {
 		for _, n := range trackedNames {
 			tracked[n] = true
 		}
-		return jobsLoaded{jobs: entries, folder: folder, tracked: tracked, baseURL: client.BaseURL}
+		reason := make(map[string]string)
+		for _, q := range jobo.ListQueue(context.Background(), client) {
+			if q.Why != "" && q.TaskURL != "" {
+				reason[strings.TrimRight(q.TaskURL, "/")] = q.Why
+			}
+		}
+		return jobsLoaded{jobs: entries, folder: folder, tracked: tracked, baseURL: client.BaseURL, queueReason: reason}
 	}
 }
 
@@ -492,8 +520,8 @@ func (s JobScreen) currentFolder() string {
 
 func (s JobScreen) autoRefreshID() int { return 0 }
 
-func (s JobScreen) scheduleAutoRefresh() tea.Cmd {
-	return tea.Tick(10*time.Second, func(_ time.Time) tea.Msg { return jobAutoRefreshMsg{} })
+func (s *JobScreen) scheduleAutoRefresh() tea.Cmd {
+	return tea.Tick(s.refresh.Next(), func(_ time.Time) tea.Msg { return jobAutoRefreshMsg{} })
 }
 
 func (s JobScreen) fetchNodes() tea.Cmd {
@@ -583,6 +611,73 @@ func (s JobScreen) doDelete(name string) tea.Cmd {
 	}
 }
 
+// doBulkDelete deletes several jobs, reporting the first error encountered.
+func (s JobScreen) doBulkDelete(names []string) tea.Cmd {
+	db, dbPath := s.db, s.dbPath
+	return func() tea.Msg {
+		client, err := controller.GetActiveControllerClient(db, dbPath)
+		if err != nil {
+			return jobOpDone{label: "delete", err: err}
+		}
+		var failed int
+		var firstErr error
+		for _, n := range names {
+			if e := jobo.DeleteJob(context.Background(), client, n); e != nil {
+				failed++
+				if firstErr == nil {
+					firstErr = e
+				}
+			}
+		}
+		if firstErr != nil {
+			return jobOpDone{label: "delete", err: fmt.Errorf("%d of %d failed: %w", failed, len(names), firstErr)}
+		}
+		return jobOpDone{label: fmt.Sprintf("delete %d jobs", len(names))}
+	}
+}
+
+// selectionOrCursor returns the multi-selection when non-empty, else the single
+// cursor row's name (as a one-element slice, or empty when nothing is under it).
+func (s JobScreen) selectionOrCursor() []string {
+	if s.table.SelectedCount() > 0 {
+		out := make([]string, 0, s.table.SelectedCount())
+		for k := range s.table.Selected() {
+			out = append(out, k)
+		}
+		return out
+	}
+	if name := s.selectedJobName(); name != "" {
+		return []string{name}
+	}
+	return nil
+}
+
+// trackNames tracks or untracks the given job names in the local Mine list.
+func (s *JobScreen) trackNames(names []string, track bool) {
+	if s.baseURL == "" || len(names) == 0 {
+		return
+	}
+	profileName := controller.GetActiveProfileName(s.db)
+	if s.tracked == nil {
+		s.tracked = make(map[string]bool)
+	}
+	for _, n := range names {
+		if track {
+			_ = internaldb.TrackResource(s.db, "job", n, profileName, s.baseURL)
+			s.tracked[n] = true
+		} else {
+			_ = internaldb.UntrackResource(s.db, "job", n, profileName, s.baseURL)
+			delete(s.tracked, n)
+		}
+	}
+}
+
+// rebuildRows regenerates the table rows from the current filtered set.
+func (s *JobScreen) rebuildRows() {
+	rows, keys := buildJobRows(s.filteredJobs(), s.currentFolder(), s.tracked, s.queueReason)
+	s.table.SetRows(rows, keys)
+}
+
 func (s JobScreen) doRun(name string) tea.Cmd {
 	db, dbPath := s.db, s.dbPath
 	return func() tea.Msg {
@@ -592,6 +687,38 @@ func (s JobScreen) doRun(name string) tea.Cmd {
 		}
 		err = jobo.TriggerBuild(context.Background(), client, name, nil)
 		return jobOpDone{label: "run", err: err}
+	}
+}
+
+// paramDefsLoaded carries a job's parameter definitions so the run flow can
+// prompt for values (empty → trigger immediately).
+type paramDefsLoaded struct {
+	name   string
+	params []jobo.StringParamDef
+	err    error
+}
+
+func (s JobScreen) fetchParamDefs(name string) tea.Cmd {
+	db, dbPath := s.db, s.dbPath
+	return func() tea.Msg {
+		client, err := controller.GetActiveControllerClient(db, dbPath)
+		if err != nil {
+			return paramDefsLoaded{name: name, err: err}
+		}
+		defs, err := jobo.GetJobParamDefs(context.Background(), client, name)
+		return paramDefsLoaded{name: name, params: defs, err: err}
+	}
+}
+
+func (s JobScreen) doRunParams(name string, params map[string]string) tea.Cmd {
+	db, dbPath := s.db, s.dbPath
+	return func() tea.Msg {
+		client, err := controller.GetActiveControllerClient(db, dbPath)
+		if err != nil {
+			return jobOpDone{label: "run", err: err}
+		}
+		err = jobo.TriggerBuild(context.Background(), client, name, params)
+		return jobOpDone{label: "run " + name, err: err}
 	}
 }
 
@@ -642,6 +769,30 @@ func (s JobScreen) doCreateFolder(vals []string) tea.Cmd {
 			return jobOpDone{label: "create", err: err}
 		}
 		err = jobo.CreateFolderJob(context.Background(), client, name, "", desc)
+		return jobOpDone{label: "create " + name, err: err}
+	}
+}
+
+// doCreatePipeline creates a pipeline job. scriptFile is a path to a Groovy
+// script (resolved server-side by CreatePipelineJob); node injects an agent label.
+func (s JobScreen) doCreatePipeline(name, desc, scriptFile, nodeName string) tea.Cmd {
+	db, dbPath := s.db, s.dbPath
+	name = strings.TrimSpace(name)
+	scriptFile = strings.TrimSpace(scriptFile)
+	if nodeName == "(none)" {
+		nodeName = ""
+	}
+	return func() tea.Msg {
+		if scriptFile == "" {
+			return jobOpDone{label: "create", err: fmt.Errorf("pipeline requires a script file")}
+		}
+		client, err := controller.GetActiveControllerClient(db, dbPath)
+		if err != nil {
+			return jobOpDone{label: "create", err: err}
+		}
+		err = jobo.CreatePipelineJob(context.Background(), client, jobo.CreatePipelineParams{
+			Name: name, Description: desc, Script: scriptFile, Node: nodeName,
+		})
 		return jobOpDone{label: "create " + name, err: err}
 	}
 }
@@ -808,6 +959,26 @@ func (s JobScreen) fetchScript(name string) tea.Cmd {
 	}
 }
 
+// pipelineScriptForEdit carries a pipeline's current script into the edit form
+// (distinct from scriptLoaded, which feeds the read-only script viewer).
+type pipelineScriptForEdit struct {
+	name   string
+	script string
+	err    error
+}
+
+func (s JobScreen) fetchPipelineScript(name string) tea.Cmd {
+	db, dbPath := s.db, s.dbPath
+	return func() tea.Msg {
+		client, err := controller.GetActiveControllerClient(db, dbPath)
+		if err != nil {
+			return pipelineScriptForEdit{name: name, err: err}
+		}
+		script, err := jobo.GetPipelineScript(context.Background(), client, name)
+		return pipelineScriptForEdit{name: name, script: script, err: err}
+	}
+}
+
 func (s JobScreen) doMove(src, dst string) tea.Cmd {
 	db, dbPath := s.db, s.dbPath
 	return func() tea.Msg {
@@ -841,10 +1012,19 @@ func (s JobScreen) filteredJobs() []jobEntry {
 	jobs := s.jobs
 	// Mine filter only at root (folder drill shows everything in subfolder)
 	if !s.showAll && s.currentFolder() == "" && len(s.tracked) > 0 {
+		present := make(map[string]bool, len(jobs))
 		out := make([]jobEntry, 0, len(jobs))
 		for _, j := range jobs {
 			if s.tracked[j.Name] {
 				out = append(out, j)
+				present[j.Name] = true
+			}
+		}
+		// Synthesize placeholders for tracked jobs missing from the server so
+		// the user sees (and can untrack) stale tracks.
+		for name := range s.tracked {
+			if !present[name] {
+				out = append(out, jobEntry{Name: name, Gone: true})
 			}
 		}
 		jobs = out
@@ -861,11 +1041,36 @@ func (s JobScreen) filteredJobs() []jobEntry {
 	return out
 }
 
-func buildJobRows(jobs []jobEntry, currentFolder string, tracked map[string]bool) ([][]components.Cell, []string) {
+func buildJobRows(jobs []jobEntry, currentFolder string, tracked map[string]bool, queueReason map[string]string) ([][]components.Cell, []string) {
 	rows := make([][]components.Cell, len(jobs))
 	keys := make([]string, len(jobs))
 	for i, j := range jobs {
+		// strip folder prefix so only the leaf name shows in the table
+		leafName := j.Name
+		if currentFolder != "" && strings.HasPrefix(j.Name, currentFolder+"/") {
+			leafName = j.Name[len(currentFolder)+1:]
+		}
+
+		// Synthetic placeholder for a tracked job that's gone from the server.
+		if j.Gone {
+			rows[i] = []components.Cell{
+				{Text: "GONE", Color: theme.ColorError},
+				{Text: "—", Dim: true},
+				{Text: "★ " + leafName, Color: theme.ColorError},
+				{Text: "—", Dim: true},
+				{Text: "", Dim: true},
+				{Text: "deleted on server", Dim: true},
+			}
+			keys[i] = j.Name
+			continue
+		}
+
 		label, col := theme.JobStatusLabel(j.Color)
+		reason := ""
+		if r, ok := queueReason[strings.TrimRight(j.URL, "/")]; ok && j.URL != "" {
+			label, col = "PEND", theme.ColorYellow
+			reason = r
+		}
 		build := "—"
 		if j.Build > 0 {
 			build = fmt.Sprintf("#%d", j.Build)
@@ -876,11 +1081,6 @@ func buildJobRows(jobs []jobEntry, currentFolder string, tracked map[string]bool
 			typColor = theme.ColorYellow
 		} else if typ == "PL" {
 			typColor = theme.ColorBlue
-		}
-		// strip folder prefix so only the leaf name shows in the table
-		leafName := j.Name
-		if currentFolder != "" && strings.HasPrefix(j.Name, currentFolder+"/") {
-			leafName = j.Name[len(currentFolder)+1:]
 		}
 		// mark folders/multibranch as drillable
 		if typ == "FD" || typ == "MB" {
@@ -894,6 +1094,7 @@ func buildJobRows(jobs []jobEntry, currentFolder string, tracked map[string]bool
 			{Text: typ, Color: typColor},
 			{Text: leafName},
 			{Text: build},
+			{Text: reason, Dim: true},
 			{Text: j.Desc, Dim: true},
 		}
 		keys[i] = j.Name
@@ -970,7 +1171,7 @@ func menuItemsFor(typ string) ([]string, []jobAction) {
 		{"Schedule", actSchedule, "FS"},
 		{"Email", actEmail, "FS"},
 		{"Delete", actDelete, "*"},
-		{"Move", actMove, "FS,FD"},
+		{"Move", actMove, "FS,FD,MB"},
 		{"Clone", actClone, "FS"},
 		{"Controlled Agents", actAgents, "FD"},
 	}
@@ -1127,9 +1328,23 @@ func (s JobScreen) Update(msg tea.Msg) (JobScreen, tea.Cmd) {
 	if s.confirm.Visible() {
 		var cmd tea.Cmd
 		s.confirm, cmd = s.confirm.Update(msg)
-		if res, ok := msg.(components.ConfirmResultMsg); ok && res.Yes {
+		if res, ok := msg.(components.ConfirmResultMsg); ok {
+			if !res.Yes {
+				s.pendingBulkDelete = false
+				s.pendingDelete = ""
+				return s, cmd
+			}
 			switch s.pendingAction {
 			case actDelete:
+				if s.pendingBulkDelete {
+					s.pendingBulkDelete = false
+					names := make([]string, 0, s.table.SelectedCount())
+					for k := range s.table.Selected() {
+						names = append(names, k)
+					}
+					s.table.ClearSelection()
+					return s, tea.Batch(cmd, s.doBulkDelete(names))
+				}
 				name := s.pendingDelete
 				s.pendingDelete = ""
 				return s, tea.Batch(cmd, s.doDelete(name))
@@ -1150,8 +1365,7 @@ func (s JobScreen) Update(msg tea.Msg) (JobScreen, tea.Cmd) {
 		prevQuery := s.search.Query()
 		s.search, cmd = s.search.Update(msg)
 		if s.search.Query() != prevQuery || !s.search.Editing() {
-			rows, keys := buildJobRows(s.filteredJobs(), s.currentFolder(), s.tracked)
-			s.table.SetRows(rows, keys)
+			s.rebuildRows()
 		}
 		return s, cmd
 	}
@@ -1169,8 +1383,9 @@ func (s JobScreen) Update(msg tea.Msg) (JobScreen, tea.Cmd) {
 			s.jobs = msg.jobs
 			s.tracked = msg.tracked
 			s.baseURL = msg.baseURL
-			rows, keys := buildJobRows(s.filteredJobs(), s.currentFolder(), s.tracked)
-			s.table.SetRows(rows, keys)
+			s.queueReason = msg.queueReason
+			s.refresh.Reset()
+			s.rebuildRows()
 		}
 		return s, s.maybeFetchDetail()
 
@@ -1178,8 +1393,10 @@ func (s JobScreen) Update(msg tea.Msg) (JobScreen, tea.Cmd) {
 		if msg.err == nil {
 			s.nodeNames = msg.names
 		}
-		// nodes fetched before a form open — now open the form
-		if s.formIntent != "" {
+		// nodes fetched before a create-form open — now open the form. Edit
+		// and run flows drive their own form open from their own result msg,
+		// so only the create intent should auto-open here.
+		if s.formIntent == "create" || s.formIntent == "create-freestyle" {
 			return s.openFormAfterNodes()
 		}
 		return s, nil
@@ -1244,6 +1461,33 @@ func (s JobScreen) Update(msg tea.Msg) (JobScreen, tea.Cmd) {
 		}
 		return s, nil
 
+	case pipelineScriptForEdit:
+		if msg.err != nil {
+			s.message.Show("Error", msg.err.Error())
+			return s, nil
+		}
+		var cmd tea.Cmd
+		s, cmd = s.openEditPipeline(msg.name, msg.script)
+		return s, cmd
+
+	case paramDefsLoaded:
+		if msg.err != nil {
+			s.message.Show("Error", msg.err.Error())
+			return s, nil
+		}
+		if len(msg.params) == 0 {
+			return s, s.doRun(msg.name)
+		}
+		s.formIntent = "run-params"
+		s.runParamNames = make([]string, len(msg.params))
+		fields := make([]formField, len(msg.params))
+		for i, p := range msg.params {
+			s.runParamNames[i] = p.Name
+			fields[i] = formField{Label: p.Name, Value: p.DefaultValue, Placeholder: p.Description}
+		}
+		s.form.Show("Run "+msg.name+" — parameters", fields)
+		return s, nil
+
 	case scheduleReadyMsg:
 		s.activeJob = msg.name
 		s.schedule.Show(msg.spec, msg.name)
@@ -1294,29 +1538,26 @@ func (s JobScreen) Update(msg tea.Msg) (JobScreen, tea.Cmd) {
 			return s, nil
 		case "ctrl+a":
 			s.showAll = !s.showAll
-			rows, keys := buildJobRows(s.filteredJobs(), s.currentFolder(), s.tracked)
-			s.table.SetRows(rows, keys)
+			_ = internaldb.SetScopeShowAll(s.db, "job", s.showAll)
+			s.rebuildRows()
+			return s, nil
+		case "esc":
+			if s.table.SelectedCount() > 0 {
+				s.table.ClearSelection()
+				return s, nil
+			}
 			return s, nil
 		case "i":
-			if c := s.current(); c != nil && s.baseURL != "" {
-				profileName := controller.GetActiveProfileName(s.db)
-				_ = internaldb.TrackResource(s.db, "job", c.Name, profileName, s.baseURL)
-				if s.tracked == nil {
-					s.tracked = make(map[string]bool)
-				}
-				s.tracked[c.Name] = true
-				rows, keys := buildJobRows(s.filteredJobs(), s.currentFolder(), s.tracked)
-				s.table.SetRows(rows, keys)
-			}
+			names := s.selectionOrCursor()
+			s.trackNames(names, true)
+			s.table.ClearSelection()
+			s.rebuildRows()
 			return s, nil
 		case "u":
-			if c := s.current(); c != nil && s.baseURL != "" {
-				profileName := controller.GetActiveProfileName(s.db)
-				_ = internaldb.UntrackResource(s.db, "job", c.Name, profileName, s.baseURL)
-				delete(s.tracked, c.Name)
-				rows, keys := buildJobRows(s.filteredJobs(), s.currentFolder(), s.tracked)
-				s.table.SetRows(rows, keys)
-			}
+			names := s.selectionOrCursor()
+			s.trackNames(names, false)
+			s.table.ClearSelection()
+			s.rebuildRows()
 			return s, nil
 		case "backspace":
 			// drill back up one folder level
@@ -1328,9 +1569,10 @@ func (s JobScreen) Update(msg tea.Msg) (JobScreen, tea.Cmd) {
 				return s, s.fetchJobs()
 			}
 			return s, nil
-		case "f":
+		case "f", "F":
 			s.autoRefresh = !s.autoRefresh
 			if s.autoRefresh {
+				s.refresh.Reset()
 				return s, s.scheduleAutoRefresh()
 			}
 			return s, nil
@@ -1338,6 +1580,10 @@ func (s JobScreen) Update(msg tea.Msg) (JobScreen, tea.Cmd) {
 			name := s.selectedJobName()
 			typ := s.selectedJobType()
 			if name == "" {
+				return s, nil
+			}
+			// A "gone" placeholder has no server object — only untrack (u) applies.
+			if c := s.current(); c != nil && c.Gone {
 				return s, nil
 			}
 			// Drill into folders/multibranch instead of opening the menu.
@@ -1358,6 +1604,12 @@ func (s JobScreen) Update(msg tea.Msg) (JobScreen, tea.Cmd) {
 			}
 			return s.openCreateForm()
 		case "ctrl+d":
+			if n := s.table.SelectedCount(); n > 0 {
+				s.pendingAction = actDelete
+				s.pendingBulkDelete = true
+				s.confirm.Show("Delete Jobs", fmt.Sprintf("Delete %d selected job(s)? This cannot be undone.", n))
+				return s, nil
+			}
 			name := s.selectedJobName()
 			if name == "" {
 				return s, nil
@@ -1365,6 +1617,29 @@ func (s JobScreen) Update(msg tea.Msg) (JobScreen, tea.Cmd) {
 			s.pendingDelete = name
 			s.pendingAction = actDelete
 			s.confirm.Show("Delete Job", fmt.Sprintf("Delete '%s'? This cannot be undone.", name))
+			return s, nil
+		case "c":
+			name := s.selectedJobName()
+			if name == "" || s.selectedJobType() != "FS" {
+				return s, nil
+			}
+			s.activeJob = name
+			s.formIntent = "clone"
+			s.form.Show("Clone: "+name, []formField{
+				{Label: "New name", Placeholder: name + "-copy", Required: true},
+			})
+			return s, nil
+		case "m":
+			name := s.selectedJobName()
+			typ := s.selectedJobType()
+			if name == "" || (typ != "FS" && typ != "FD" && typ != "MB") {
+				return s, nil
+			}
+			s.activeJob = name
+			s.formIntent = "move"
+			s.form.Show("Move: "+name, []formField{
+				{Label: "Destination", Placeholder: "folder/newname", Required: true},
+			})
 			return s, nil
 		case "A":
 			name := s.selectedJobName()
@@ -1392,7 +1667,7 @@ func (s JobScreen) Update(msg tea.Msg) (JobScreen, tea.Cmd) {
 // kicks off a background fetch when the highlighted job hasn't been seen yet.
 func (s *JobScreen) maybeFetchDetail() tea.Cmd {
 	c := s.current()
-	if c == nil {
+	if c == nil || c.Gone {
 		s.detailSummary = nil
 		return nil
 	}
@@ -1425,7 +1700,8 @@ func (s JobScreen) handleMenuAction(act jobAction) (JobScreen, tea.Cmd) {
 		return s, s.fetchScript(name)
 	case actRun:
 		s.menu.Hide()
-		return s, s.doRun(name)
+		s.activeJob = name
+		return s, s.fetchParamDefs(name)
 	case actStop:
 		s.menu.Hide()
 		s.pendingAction = actStop
@@ -1440,7 +1716,15 @@ func (s JobScreen) handleMenuAction(act jobAction) (JobScreen, tea.Cmd) {
 			}
 			return s, s.fetchConfigSummary(name)
 		}
-		s.message.Show("Edit", "Pipeline TUI edit not yet implemented. Use: bee job update pipeline "+name)
+		if typ == "PL" {
+			s.formIntent = "edit-pipeline"
+			s.activeJob = name
+			if s.nodeNames == nil {
+				return s, tea.Batch(s.fetchNodes(), s.fetchPipelineScript(name))
+			}
+			return s, s.fetchPipelineScript(name)
+		}
+		s.message.Show("Edit", "This job type can't be edited from the TUI.")
 		return s, nil
 	case actParams:
 		s.menu.Hide()
@@ -1578,8 +1862,9 @@ func (s JobScreen) openCreateForm() (JobScreen, tea.Cmd) {
 		{Label: "Name", Required: true},
 		{Label: "Type", Options: []string{"freestyle", "folder", "pipeline"}, Value: "freestyle"},
 		{Label: "Description"},
-		{Label: "Shell command", Placeholder: "echo hello"},
-		{Label: "Working dir", Placeholder: "/home/jenkins"},
+		{Label: "Shell command", Placeholder: "echo hello (freestyle)"},
+		{Label: "Working dir", Placeholder: "/home/jenkins (freestyle)"},
+		{Label: "Script file", Placeholder: "path/to/Jenkinsfile (pipeline)"},
 		{Label: "Node", Options: nodeOpts, Value: nodeOpts[0]},
 	})
 	s.formIntent = "create"
@@ -1623,26 +1908,83 @@ func (s JobScreen) openEditFreestyle(sum jobo.ConfigSummary) (JobScreen, tea.Cmd
 	return s, nil
 }
 
+// openEditPipeline opens the pipeline edit form. curScript is shown as a
+// read-only preview in the title hint; the Script field takes a new file path
+// (leave blank to keep the current script and only update description/node).
+func (s JobScreen) openEditPipeline(name, curScript string) (JobScreen, tea.Cmd) {
+	nodeOpts := s.nodeNames
+	if len(nodeOpts) == 0 {
+		nodeOpts = []string{"(none)"}
+	}
+	preview := strings.TrimSpace(curScript)
+	if len(preview) > 48 {
+		preview = preview[:48] + "…"
+	}
+	title := "Edit pipeline: " + name
+	if preview != "" {
+		title += "  (current: " + strings.ReplaceAll(preview, "\n", " ") + ")"
+	}
+	s.form.Show(title, []formField{
+		{Label: "Description"},
+		{Label: "Script file", Placeholder: "path/to/Jenkinsfile (blank = keep)"},
+		{Label: "Node", Options: nodeOpts, Value: nodeOpts[0]},
+	})
+	return s, nil
+}
+
+func (s JobScreen) doEditPipeline(name string, vals []string) tea.Cmd {
+	db, dbPath := s.db, s.dbPath
+	desc := strGet(vals, 0)
+	scriptFile := strGet(vals, 1)
+	nodeName := strGet(vals, 2)
+	if nodeName == "(none)" {
+		nodeName = ""
+	}
+	return func() tea.Msg {
+		client, err := controller.GetActiveControllerClient(db, dbPath)
+		if err != nil {
+			return jobOpDone{label: "edit", err: err}
+		}
+		err = jobo.UpdatePipelineFromTUI(context.Background(), client, name, desc, scriptFile, nodeName)
+		return jobOpDone{label: "edit " + name, err: err}
+	}
+}
+
 func (s JobScreen) handleFormSubmit(vals []string) tea.Cmd {
 	intent := s.formIntent
 	s.formIntent = ""
 	switch intent {
 	case "create":
-		// vals: 0=name, 1=type, 2=desc, 3=shell, 4=chdir, 5=node
-		if len(vals) < 6 {
+		// vals: 0=name, 1=type, 2=desc, 3=shell, 4=chdir, 5=scriptFile, 6=node
+		if len(vals) < 7 {
 			return nil
 		}
 		switch vals[1] {
 		case "folder":
 			return s.doCreateFolder([]string{vals[0], vals[2]})
+		case "pipeline":
+			return s.doCreatePipeline(vals[0], vals[2], vals[5], vals[6])
 		default: // freestyle
-			return s.doCreateFreestyle([]string{vals[0], vals[2], vals[3], vals[4], vals[5]}, s.nodeNames)
+			return s.doCreateFreestyle([]string{vals[0], vals[2], vals[3], vals[4], vals[6]}, s.nodeNames)
 		}
 	case "edit-freestyle":
 		if len(vals) < 4 {
 			return nil
 		}
 		return s.doEditFreestyle(s.activeJob, vals)
+	case "edit-pipeline":
+		if len(vals) < 3 {
+			return nil
+		}
+		return s.doEditPipeline(s.activeJob, vals)
+	case "run-params":
+		params := map[string]string{}
+		for i, name := range s.runParamNames {
+			if i < len(vals) {
+				params[name] = vals[i]
+			}
+		}
+		return s.doRunParams(s.activeJob, params)
 	case "add-agent":
 		if len(vals) < 1 || strings.TrimSpace(vals[0]) == "" {
 			return nil
@@ -1714,6 +2056,9 @@ func (s JobScreen) View() string {
 	if s.autoRefresh {
 		title += theme.StyleDim.Render("  [auto]")
 	}
+	if n := s.table.SelectedCount(); n > 0 {
+		title += " " + theme.StyleWarning.Render(fmt.Sprintf("[%d selected]", n))
+	}
 
 	var sb strings.Builder
 	sb.WriteString(theme.StyleTitle.Render(title) + "\n")
@@ -1741,6 +2086,9 @@ func (s JobScreen) View() string {
 		if c.Build > 0 {
 			sb.WriteString(theme.StyleDim.Render(fmt.Sprintf("  #%d", c.Build)))
 		}
+		if reason, ok := s.queueReason[strings.TrimRight(c.URL, "/")]; ok && c.URL != "" {
+			sb.WriteString("  " + theme.StyleWarning.Render(theme.SymLoading+" "+reason))
+		}
 		sb.WriteString("\n")
 		sb.WriteString(theme.StyleDim.Render("type ") + theme.StyleBlue.Render(typeLabel(c.Class)))
 		if s.detailSummary != nil {
@@ -1756,12 +2104,16 @@ func (s JobScreen) View() string {
 			}
 		}
 		sb.WriteString("\n")
+		if c.URL != "" {
+			sb.WriteString(theme.StyleSubtle.Render(c.URL))
+			sb.WriteString("\n")
+		}
 		if c.Desc != "" {
 			sb.WriteString(theme.StyleDim.Render(c.Desc))
 			sb.WriteString("\n")
 		}
 	}
 
-	sb.WriteString(theme.StyleDim.Render("Enter drill/menu  ·  ↑↓ move  ·  ⌫ up  ·  Ctrl+n new  ·  Ctrl+d delete  ·  A agents(FD)  ·  ^A mine/all  ·  i track  ·  u untrack  ·  f auto  ·  r refresh  ·  / search"))
+	sb.WriteString(theme.StyleDim.Render("Enter drill/menu  ·  Space select  ·  ⌫ up  ·  ^N new  ·  c clone  ·  m move  ·  ^D delete  ·  A agents  ·  ^A mine/all  ·  i/u track  ·  F auto  ·  r refresh  ·  / search"))
 	return sb.String()
 }

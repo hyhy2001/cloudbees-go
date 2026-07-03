@@ -25,6 +25,7 @@ type credEntry struct {
 	TypeName    string
 	Scope       string
 	Description string
+	Gone        bool // synthesized placeholder for a tracked cred missing on the server
 }
 
 type credsLoaded struct {
@@ -80,6 +81,10 @@ type CredScreen struct {
 	// detail panel: username fetched from the highlighted credential's config.xml
 	credUsername      string
 	credUsernameCache map[string]string
+
+	pendingBulkDelete bool
+	refresh           components.AutoRefresh
+	editType          string // TypeName of the credential currently being edited
 }
 
 // NewCredScreen creates a new CredScreen.
@@ -90,12 +95,15 @@ func NewCredScreen(db *sql.DB, dbPath string) CredScreen {
 		{Header: "Scope", Width: 10},
 		{Header: "Description", Width: 34, Flex: true},
 	}
+	tbl := components.NewDataTable(cols)
+	tbl.SetSelectable(true)
 	return CredScreen{
 		db:                db,
 		dbPath:            dbPath,
-		table:             components.NewDataTable(cols),
+		table:             tbl,
 		loading:           true,
 		store:             "system",
+		showAll:           internaldb.GetScopeShowAll(db, "credential"),
 		credUsernameCache: make(map[string]string),
 	}
 }
@@ -208,10 +216,18 @@ func (s CredScreen) fetchCredConfig(id string) tea.Cmd {
 func (s CredScreen) filteredCreds() []credEntry {
 	creds := s.creds
 	if !s.showAll && len(s.tracked) > 0 {
+		present := make(map[string]bool, len(creds))
 		out := make([]credEntry, 0, len(creds))
 		for _, c := range creds {
 			if s.tracked[c.ID] {
 				out = append(out, c)
+				present[c.ID] = true
+			}
+		}
+		// Synthesize placeholders for tracked creds missing from the server.
+		for id := range s.tracked {
+			if !present[id] {
+				out = append(out, credEntry{ID: id, Gone: true})
 			}
 		}
 		creds = out
@@ -232,6 +248,16 @@ func buildCredRows(creds []credEntry, tracked map[string]bool) ([][]components.C
 	rows := make([][]components.Cell, len(creds))
 	keys := make([]string, len(creds))
 	for i, c := range creds {
+		if c.Gone {
+			rows[i] = []components.Cell{
+				{Text: "★ " + c.ID, Color: theme.ColorError},
+				{Text: "GONE", Color: theme.ColorError},
+				{Text: "", Dim: true},
+				{Text: "deleted on server", Dim: true},
+			}
+			keys[i] = c.ID
+			continue
+		}
 		id := c.ID
 		if tracked[c.ID] {
 			id = "★ " + id
@@ -294,8 +320,7 @@ func (s CredScreen) Update(msg tea.Msg) (CredScreen, tea.Cmd) {
 		prevQuery := s.search.Query()
 		s.search, cmd = s.search.Update(msg)
 		if s.search.Query() != prevQuery || !s.search.Editing() {
-			rows, keys := buildCredRows(s.filteredCreds(), s.tracked)
-			s.table.SetRows(rows, keys)
+			s.rebuildRows()
 		}
 		return s, cmd
 	}
@@ -309,8 +334,8 @@ func (s CredScreen) Update(msg tea.Msg) (CredScreen, tea.Cmd) {
 			s.username = msg.username
 			s.tracked = msg.tracked
 			s.baseURL = msg.baseURL
-			rows, keys := buildCredRows(s.filteredCreds(), s.tracked)
-			s.table.SetRows(rows, keys)
+			s.refresh.Reset()
+			s.rebuildRows()
 		}
 		return s, s.maybeFetchDetail()
 
@@ -326,9 +351,6 @@ func (s CredScreen) Update(msg tea.Msg) (CredScreen, tea.Cmd) {
 			s.detail.Show("Error", msg.err.Error())
 			return s, nil
 		}
-		if strings.HasPrefix(msg.label, "tracked") || strings.HasPrefix(msg.label, "untracked") {
-			return s, nil // optimistic update already applied
-		}
 		s.detail.Show("Done", msg.label+" succeeded.")
 		if strings.HasPrefix(msg.label, "delete") {
 			delete(s.credUsernameCache, s.pending)
@@ -337,10 +359,20 @@ func (s CredScreen) Update(msg tea.Msg) (CredScreen, tea.Cmd) {
 		return s, s.fetchCreds()
 
 	case components.ConfirmResultMsg:
+		if msg.Yes && s.pendingBulkDelete {
+			s.pendingBulkDelete = false
+			ids := make([]string, 0, s.table.SelectedCount())
+			for k := range s.table.Selected() {
+				ids = append(ids, k)
+			}
+			s.table.ClearSelection()
+			return s, s.doBulkDeleteCreds(ids)
+		}
 		if msg.Yes && s.pending != "" {
 			return s, s.doDeleteCred(s.pending)
 		}
 		s.pending = ""
+		s.pendingBulkDelete = false
 		return s, nil
 
 	case tea.WindowSizeMsg:
@@ -359,9 +391,20 @@ func (s CredScreen) Update(msg tea.Msg) (CredScreen, tea.Cmd) {
 			s.search.Open()
 			return s, nil
 		case "enter":
-			if c := s.current(); c != nil {
+			if c := s.current(); c != nil && !c.Gone {
 				s.activeID = c.ID
-				s.menu.Show("Credential: "+c.ID, []string{"Edit", "Delete"})
+				items := []string{"Edit", "Delete"}
+				if s.tracked[c.ID] {
+					items = append(items, "Untrack")
+				} else {
+					items = append(items, "Track")
+				}
+				s.menu.Show("Credential: "+c.ID, items)
+			}
+			return s, nil
+		case "esc":
+			if s.table.SelectedCount() > 0 {
+				s.table.ClearSelection()
 			}
 			return s, nil
 		case "ctrl+n":
@@ -369,15 +412,21 @@ func (s CredScreen) Update(msg tea.Msg) (CredScreen, tea.Cmd) {
 			s.credFormIntent = "type-pick"
 			return s, nil
 		case "ctrl+d":
+			if n := s.table.SelectedCount(); n > 0 {
+				s.pendingBulkDelete = true
+				s.modal.Show("Delete credentials", fmt.Sprintf("Delete %d selected credential(s)? This cannot be undone.", n))
+				return s, nil
+			}
 			if c := s.current(); c != nil {
 				s.pending = c.ID
 				s.modal.Show("Delete credential", fmt.Sprintf("Delete credential '%s'? This cannot be undone.", c.ID))
 			}
 			return s, nil
-		case "f":
+		case "f", "F":
 			s.autoRefresh = !s.autoRefresh
 			if s.autoRefresh {
-				return s, credScheduleAutoRefresh()
+				s.refresh.Reset()
+				return s, s.credScheduleAutoRefresh()
 			}
 			return s, nil
 		case "S":
@@ -391,24 +440,18 @@ func (s CredScreen) Update(msg tea.Msg) (CredScreen, tea.Cmd) {
 			return s, s.fetchCreds()
 		case "ctrl+a":
 			s.showAll = !s.showAll
-			rows, keys := buildCredRows(s.filteredCreds(), s.tracked)
-			s.table.SetRows(rows, keys)
+			_ = internaldb.SetScopeShowAll(s.db, "credential", s.showAll)
+			s.rebuildRows()
 			return s, nil
 		case "i":
-			if c := s.current(); c != nil {
-				s.tracked[c.ID] = true
-				rows, keys := buildCredRows(s.filteredCreds(), s.tracked)
-				s.table.SetRows(rows, keys)
-				return s, s.doTrackCred(c.ID, true)
-			}
+			s.trackIDs(s.selectionOrCursor(), true)
+			s.table.ClearSelection()
+			s.rebuildRows()
 			return s, nil
 		case "u":
-			if c := s.current(); c != nil {
-				delete(s.tracked, c.ID)
-				rows, keys := buildCredRows(s.filteredCreds(), s.tracked)
-				s.table.SetRows(rows, keys)
-				return s, s.doTrackCred(c.ID, false)
-			}
+			s.trackIDs(s.selectionOrCursor(), false)
+			s.table.ClearSelection()
+			s.rebuildRows()
 			return s, nil
 		case "r":
 			s.loading = true
@@ -417,7 +460,7 @@ func (s CredScreen) Update(msg tea.Msg) (CredScreen, tea.Cmd) {
 	}
 
 	if _, ok := msg.(credAutoRefreshMsg); ok && s.autoRefresh {
-		return s, tea.Batch(s.fetchCreds(), credScheduleAutoRefresh())
+		return s, tea.Batch(s.fetchCreds(), s.credScheduleAutoRefresh())
 	}
 
 	before := s.table.Cursor()
@@ -429,15 +472,15 @@ func (s CredScreen) Update(msg tea.Msg) (CredScreen, tea.Cmd) {
 	return s, cmd
 }
 
-func credScheduleAutoRefresh() tea.Cmd {
-	return tea.Tick(10*time.Second, func(_ time.Time) tea.Msg { return credAutoRefreshMsg{} })
+func (s *CredScreen) credScheduleAutoRefresh() tea.Cmd {
+	return tea.Tick(s.refresh.Next(), func(_ time.Time) tea.Msg { return credAutoRefreshMsg{} })
 }
 
 // maybeFetchDetail serves the detail-panel username from cache, or kicks off
 // a background fetch when the highlighted credential hasn't been seen yet.
 func (s *CredScreen) maybeFetchDetail() tea.Cmd {
 	c := s.current()
-	if c == nil {
+	if c == nil || c.Gone {
 		s.credUsername = ""
 		return nil
 	}
@@ -471,22 +514,44 @@ func (s CredScreen) handleCredMenuSelect(idx int) (CredScreen, tea.Cmd) {
 		}
 		return s, nil
 	}
-	// context menu for existing cred: 0=Edit, 1=Delete
+	// context menu for existing cred: 0=Edit, 1=Delete, 2=Track|Untrack
 	switch idx {
-	case 0: // Edit
-		// For edit, show just description (we can't retrieve the secret/password)
+	case 0: // Edit — type-aware fields (secret/password can't be read back, so
+		// they're blank = "keep current"; description prefills)
+		cur := s.currentByID(s.activeID)
+		desc := ""
+		typeName := ""
+		if cur != nil {
+			desc = cur.Description
+			typeName = cur.TypeName
+		}
+		s.editType = typeName
 		s.credFormIntent = "edit"
-		s.form.Show("Edit: "+s.activeID, []formField{
-			{Label: "Description", Value: func() string {
-				if c := s.currentByID(s.activeID); c != nil {
-					return c.Description
-				}
-				return ""
-			}()},
-		})
+		lower := strings.ToLower(typeName)
+		switch {
+		case strings.Contains(lower, "username"):
+			s.form.Show("Edit: "+s.activeID, []formField{
+				{Label: "Username", Value: s.credUsername, Placeholder: "leave blank to keep"},
+				{Label: "Password", Password: true, Placeholder: "leave blank to keep"},
+				{Label: "Description", Value: desc},
+			})
+		case strings.Contains(lower, "secret") || strings.Contains(lower, "string"):
+			s.form.Show("Edit: "+s.activeID, []formField{
+				{Label: "Secret", Password: true, Placeholder: "leave blank to keep"},
+				{Label: "Description", Value: desc},
+			})
+		default:
+			s.form.Show("Edit: "+s.activeID, []formField{
+				{Label: "Description", Value: desc},
+			})
+		}
 	case 1: // Delete
 		s.pending = s.activeID
 		s.modal.Show("Delete credential", fmt.Sprintf("Delete credential '%s'? This cannot be undone.", s.activeID))
+	case 2: // Track / Untrack (label depends on current state)
+		track := !s.tracked[s.activeID]
+		s.trackIDs([]string{s.activeID}, track)
+		s.rebuildRows()
 	}
 	return s, nil
 }
@@ -500,22 +565,68 @@ func (s CredScreen) currentByID(id string) *credEntry {
 	return nil
 }
 
-func (s CredScreen) doTrackCred(id string, track bool) tea.Cmd {
-	db, baseURL := s.db, s.baseURL
-	profileName := controller.GetActiveProfileName(db)
+func (s CredScreen) doBulkDeleteCreds(ids []string) tea.Cmd {
+	db, dbPath, store, username := s.db, s.dbPath, s.store, s.username
 	return func() tea.Msg {
-		if track {
-			_ = internaldb.TrackResource(db, "credential", profileName, baseURL, id)
-		} else {
-			_ = internaldb.UntrackResource(db, "credential", profileName, baseURL, id)
+		client, err := controller.GetActiveControllerClient(db, dbPath)
+		if err != nil {
+			return credActionDone{label: "delete", err: err}
 		}
-		return credActionDone{label: func() string {
-			if track {
-				return "tracked " + id
+		var failed int
+		var firstErr error
+		for _, id := range ids {
+			if e := credpkg.DeleteCredential(context.Background(), client, id, username, store); e != nil {
+				failed++
+				if firstErr == nil {
+					firstErr = e
+				}
 			}
-			return "untracked " + id
-		}()}
+		}
+		if firstErr != nil {
+			return credActionDone{label: "delete", err: fmt.Errorf("%d of %d failed: %w", failed, len(ids), firstErr)}
+		}
+		return credActionDone{label: fmt.Sprintf("delete %d credentials", len(ids))}
 	}
+}
+
+// selectionOrCursor returns the multi-selection when non-empty, else the cursor
+// row's ID as a one-element slice (empty when nothing is under the cursor).
+func (s CredScreen) selectionOrCursor() []string {
+	if s.table.SelectedCount() > 0 {
+		out := make([]string, 0, s.table.SelectedCount())
+		for k := range s.table.Selected() {
+			out = append(out, k)
+		}
+		return out
+	}
+	if c := s.current(); c != nil {
+		return []string{c.ID}
+	}
+	return nil
+}
+
+func (s *CredScreen) trackIDs(ids []string, track bool) {
+	if s.baseURL == "" || len(ids) == 0 {
+		return
+	}
+	profileName := controller.GetActiveProfileName(s.db)
+	if s.tracked == nil {
+		s.tracked = make(map[string]bool)
+	}
+	for _, id := range ids {
+		if track {
+			_ = internaldb.TrackResource(s.db, "credential", id, profileName, s.baseURL)
+			s.tracked[id] = true
+		} else {
+			_ = internaldb.UntrackResource(s.db, "credential", id, profileName, s.baseURL)
+			delete(s.tracked, id)
+		}
+	}
+}
+
+func (s *CredScreen) rebuildRows() {
+	rows, keys := buildCredRows(s.filteredCreds(), s.tracked)
+	s.table.SetRows(rows, keys)
 }
 
 func (s CredScreen) handleCredFormSubmit(vals []string) tea.Cmd {
@@ -541,10 +652,31 @@ func (s CredScreen) handleCredFormSubmit(vals []string) tea.Cmd {
 		}
 		return s.doCreateST(id, secret, desc)
 	case "edit":
-		if len(vals) < 1 {
-			return nil
+		// Map form fields to config.xml tags by credential type. Blank values
+		// are skipped (= keep current); secrets can't be read back, so a blank
+		// leaves them untouched.
+		lower := strings.ToLower(s.editType)
+		var updates []struct{ tag, value string }
+		switch {
+		case strings.Contains(lower, "username"):
+			// fields: 0=Username, 1=Password, 2=Description
+			if v := strGet(vals, 0); v != "" {
+				updates = append(updates, struct{ tag, value string }{"username", v})
+			}
+			if v := strGet(vals, 1); v != "" {
+				updates = append(updates, struct{ tag, value string }{"password", v})
+			}
+			updates = append(updates, struct{ tag, value string }{"description", strGet(vals, 2)})
+		case strings.Contains(lower, "secret") || strings.Contains(lower, "string"):
+			// fields: 0=Secret, 1=Description
+			if v := strGet(vals, 0); v != "" {
+				updates = append(updates, struct{ tag, value string }{"secret", v})
+			}
+			updates = append(updates, struct{ tag, value string }{"description", strGet(vals, 1)})
+		default:
+			// fields: 0=Description
+			updates = append(updates, struct{ tag, value string }{"description", strGet(vals, 0)})
 		}
-		desc := vals[0]
 		db, dbPath, store, username := s.db, s.dbPath, s.store, s.username
 		id := s.activeID
 		return func() tea.Msg {
@@ -552,8 +684,12 @@ func (s CredScreen) handleCredFormSubmit(vals []string) tea.Cmd {
 			if err != nil {
 				return credActionDone{label: "edit", err: err}
 			}
-			err = credpkg.UpdateCredentialField(context.Background(), client, id, "description", desc, username, store)
-			return credActionDone{label: "edit " + id, err: err}
+			for _, u := range updates {
+				if err := credpkg.UpdateCredentialField(context.Background(), client, id, u.tag, u.value, username, store); err != nil {
+					return credActionDone{label: "edit", err: err}
+				}
+			}
+			return credActionDone{label: "edit " + id}
 		}
 	}
 	return nil
@@ -587,6 +723,12 @@ func (s CredScreen) View() string {
 		} else {
 			sb.WriteString("  " + theme.StyleWarning.Render("[mine]"))
 		}
+	}
+	if s.autoRefresh {
+		sb.WriteString("  " + theme.StyleDim.Render("[auto]"))
+	}
+	if n := s.table.SelectedCount(); n > 0 {
+		sb.WriteString("  " + theme.StyleWarning.Render(fmt.Sprintf("[%d selected]", n)))
 	}
 	sb.WriteString("\n")
 	if s.loading {
@@ -626,6 +768,6 @@ func (s CredScreen) View() string {
 		sb.WriteString("\n")
 	}
 
-	sb.WriteString(theme.StyleDim.Render("Enter menu  ·  ↑↓ move  ·  ^N new  ·  ^D delete  ·  i track  ·  u untrack  ·  ^A mine/all  ·  S store  ·  r refresh  ·  / search"))
+	sb.WriteString(theme.StyleDim.Render("Enter menu  ·  Space select  ·  ^N new  ·  ^D delete  ·  i/u track  ·  ^A mine/all  ·  S store  ·  F auto  ·  r refresh  ·  / search"))
 	return sb.String()
 }

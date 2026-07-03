@@ -60,6 +60,7 @@ type ControllerScreen struct {
 	height      int
 	activeName  string // currently selected controller name
 	autoRefresh bool
+	refresh     components.AutoRefresh
 
 	// inline detail panel per highlighted controller
 	infoCache map[string]ctrlInfoLoaded
@@ -149,8 +150,8 @@ func (s ControllerScreen) doFetchInfo(name, ctrlURL string) tea.Cmd {
 	}
 }
 
-func ctrlScheduleAutoRefresh() tea.Cmd {
-	return tea.Tick(10*time.Second, func(_ time.Time) tea.Msg { return ctrlAutoRefreshMsg{} })
+func (s *ControllerScreen) ctrlScheduleAutoRefresh() tea.Cmd {
+	return tea.Tick(s.refresh.Next(), func(_ time.Time) tea.Msg { return ctrlAutoRefreshMsg{} })
 }
 
 // filteredControllers applies the search box filter to the full controller list.
@@ -246,6 +247,7 @@ func (s ControllerScreen) Update(msg tea.Msg) (ControllerScreen, tea.Cmd) {
 		s.err = msg.err
 		if msg.err == nil {
 			s.ctrls = msg.ctrls
+			s.refresh.Reset()
 			rows, keys := buildControllerRows(s.filteredControllers(), s.activeName)
 			s.table.SetRows(rows, keys)
 		}
@@ -269,32 +271,42 @@ func (s ControllerScreen) Update(msg tea.Msg) (ControllerScreen, tea.Cmd) {
 		}
 		s.infoCache[msg.name] = msg
 		var b strings.Builder
-		b.WriteString("Type:  " + msg.caps.TypeLabel + "\n")
-		if msg.info.NumExecutors > 0 {
-			b.WriteString(fmt.Sprintf("Executors:  %d\n", msg.info.NumExecutors))
+		hdr := func(t string) string {
+			return lipgloss.NewStyle().Foreground(lipgloss.Color(theme.ColorActive)).Bold(true).Render(t)
 		}
+		b.WriteString(hdr("System") + "\n")
+		b.WriteString("  Type:  " + msg.caps.TypeLabel + "\n")
 		if msg.info.NodeDescription != "" {
-			b.WriteString("Mode:  " + msg.info.NodeDescription + "\n")
+			b.WriteString("  Mode:  " + msg.info.NodeDescription + "\n")
+		}
+		if msg.info.NumExecutors > 0 {
+			b.WriteString(fmt.Sprintf("  Executors:  %d total, %d free\n", msg.info.NumExecutors, msg.info.NumFreeExecutors))
 		}
 		if msg.info.UserID != "" {
 			name := msg.info.UserFullName
 			if name == "" {
 				name = msg.info.UserID
 			}
-			b.WriteString("User:  " + name + " (" + msg.info.UserID + ")\n")
+			b.WriteString("\n" + hdr("Current User") + "\n")
+			b.WriteString("  " + name + " (" + msg.info.UserID + ")\n")
 		}
-		perm := func(label string, ok bool) string {
+		b.WriteString("\n" + hdr("Permissions") + "\n")
+		perm := func(label string, ok bool, tab string) string {
 			sym := theme.SymFail
 			col := theme.ColorError
 			if ok {
 				sym = theme.SymOnline
 				col = theme.ColorSuccess
 			}
-			return lipgloss.NewStyle().Foreground(lipgloss.Color(col)).Render(sym) + " " + label
+			line := "  " + lipgloss.NewStyle().Foreground(lipgloss.Color(col)).Render(sym) + " " + label
+			if ok && tab != "" {
+				line += theme.StyleDim.Render("  → " + tab + " tab")
+			}
+			return line
 		}
-		b.WriteString(perm("create job", msg.caps.CanCreateJob) + "\n")
-		b.WriteString(perm("create node", msg.caps.CanCreateNode) + "\n")
-		b.WriteString(perm("create credential", msg.caps.CanCreateCred))
+		b.WriteString(perm("create job", msg.caps.CanCreateJob, "Jobs") + "\n")
+		b.WriteString(perm("create node", msg.caps.CanCreateNode, "Nodes") + "\n")
+		b.WriteString(perm("create credential", msg.caps.CanCreateCred, "Credentials"))
 		s.detail.Show("Controller: "+msg.name, b.String())
 		return s, nil
 
@@ -322,10 +334,11 @@ func (s ControllerScreen) Update(msg tea.Msg) (ControllerScreen, tea.Cmd) {
 				return s, nil
 			}
 			return s, s.doSelect(c.Name, c.URL)
-		case "f":
+		case "f", "F":
 			s.autoRefresh = !s.autoRefresh
 			if s.autoRefresh {
-				return s, ctrlScheduleAutoRefresh()
+				s.refresh.Reset()
+				return s, s.ctrlScheduleAutoRefresh()
 			}
 			return s, nil
 		case "r":
@@ -335,7 +348,7 @@ func (s ControllerScreen) Update(msg tea.Msg) (ControllerScreen, tea.Cmd) {
 	}
 
 	if _, ok := msg.(ctrlAutoRefreshMsg); ok && s.autoRefresh {
-		return s, tea.Batch(s.fetchControllers(), ctrlScheduleAutoRefresh())
+		return s, tea.Batch(s.fetchControllers(), s.ctrlScheduleAutoRefresh())
 	}
 
 	var cmd tea.Cmd
@@ -391,7 +404,7 @@ func (s ControllerScreen) View() string {
 		sb.WriteString(theme.StyleDim.Render("type ") + theme.StyleBlue.Render(typeLabelController(c.Class)))
 		if info, ok := s.infoCache[c.Name]; ok && info.err == nil {
 			if info.info.NumExecutors > 0 {
-				sb.WriteString(theme.StyleDim.Render(fmt.Sprintf("   exec %d", info.info.NumExecutors)))
+				sb.WriteString(theme.StyleDim.Render(fmt.Sprintf("   exec %d/%d free", info.info.NumFreeExecutors, info.info.NumExecutors)))
 			}
 			if info.info.UserID != "" {
 				name := info.info.UserFullName

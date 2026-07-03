@@ -41,6 +41,7 @@ type nodeEntry struct {
 	Executors   int
 	Labels      string
 	Description string
+	Gone        bool // synthesized placeholder for a tracked node missing on the server
 }
 
 type nodesLoaded struct {
@@ -94,6 +95,9 @@ type NodeScreen struct {
 	// detail panel: config.xml digest for the highlighted node
 	nodeConfig      *nodepkg.NodeConfig
 	nodeConfigCache map[string]nodepkg.NodeConfig
+
+	pendingBulkDelete bool // confirm targets the multi-selection
+	refresh           components.AutoRefresh
 }
 
 // NewNodeScreen creates a new NodeScreen.
@@ -105,11 +109,14 @@ func NewNodeScreen(db *sql.DB, dbPath string) NodeScreen {
 		{Header: "Labels", Width: 24, Flex: true},
 		{Header: "Description", Width: 22, Flex: true},
 	}
+	tbl := components.NewDataTable(cols)
+	tbl.SetSelectable(true)
 	return NodeScreen{
 		db:              db,
 		dbPath:          dbPath,
-		table:           components.NewDataTable(cols),
+		table:           tbl,
 		loading:         true,
+		showAll:         internaldb.GetScopeShowAll(db, "node"),
 		nodeConfigCache: make(map[string]nodepkg.NodeConfig),
 	}
 }
@@ -171,6 +178,70 @@ func (s NodeScreen) doDeleteNode(name string) tea.Cmd {
 	}
 }
 
+func (s NodeScreen) doBulkDeleteNodes(names []string) tea.Cmd {
+	db, dbPath := s.db, s.dbPath
+	return func() tea.Msg {
+		client, err := controller.GetActiveControllerClient(db, dbPath)
+		if err != nil {
+			return nodeActionDone{label: "delete", err: err}
+		}
+		var failed int
+		var firstErr error
+		for _, n := range names {
+			if e := nodepkg.DeleteNode(context.Background(), client, n); e != nil {
+				failed++
+				if firstErr == nil {
+					firstErr = e
+				}
+			}
+		}
+		if firstErr != nil {
+			return nodeActionDone{label: "delete", err: fmt.Errorf("%d of %d failed: %w", failed, len(names), firstErr)}
+		}
+		return nodeActionDone{label: fmt.Sprintf("delete %d nodes", len(names))}
+	}
+}
+
+// selectionOrCursor returns the multi-selection when non-empty, else the cursor
+// row's name as a one-element slice (empty when nothing is under the cursor).
+func (s NodeScreen) selectionOrCursor() []string {
+	if s.table.SelectedCount() > 0 {
+		out := make([]string, 0, s.table.SelectedCount())
+		for k := range s.table.Selected() {
+			out = append(out, k)
+		}
+		return out
+	}
+	if c := s.current(); c != nil {
+		return []string{c.Name}
+	}
+	return nil
+}
+
+func (s *NodeScreen) trackNames(names []string, track bool) {
+	if s.baseURL == "" || len(names) == 0 {
+		return
+	}
+	profileName := controller.GetActiveProfileName(s.db)
+	if s.tracked == nil {
+		s.tracked = make(map[string]bool)
+	}
+	for _, n := range names {
+		if track {
+			_ = internaldb.TrackResource(s.db, "node", n, profileName, s.baseURL)
+			s.tracked[n] = true
+		} else {
+			_ = internaldb.UntrackResource(s.db, "node", n, profileName, s.baseURL)
+			delete(s.tracked, n)
+		}
+	}
+}
+
+func (s *NodeScreen) rebuildRows() {
+	rows, keys := buildNodeRows(s.filteredNodes(), s.tracked)
+	s.table.SetRows(rows, keys)
+}
+
 func (s NodeScreen) doToggleOffline(name string) tea.Cmd {
 	db, dbPath := s.db, s.dbPath
 	return func() tea.Msg {
@@ -213,8 +284,8 @@ func (s NodeScreen) doUpdateNode(name string, opts nodepkg.UpdateNodeOpts) tea.C
 	}
 }
 
-func nodeScheduleAutoRefresh() tea.Cmd {
-	return tea.Tick(10*time.Second, func(_ time.Time) tea.Msg { return nodeAutoRefreshMsg{} })
+func (s *NodeScreen) nodeScheduleAutoRefresh() tea.Cmd {
+	return tea.Tick(s.refresh.Next(), func(_ time.Time) tea.Msg { return nodeAutoRefreshMsg{} })
 }
 
 func (s NodeScreen) fetchNodeGrants(nodeName string) tea.Cmd {
@@ -280,10 +351,18 @@ func (s NodeScreen) fetchNodeConfig(name string) tea.Cmd {
 func (s NodeScreen) filteredNodes() []nodeEntry {
 	nodes := s.nodes
 	if !s.showAll && len(s.tracked) > 0 {
+		present := make(map[string]bool, len(nodes))
 		out := make([]nodeEntry, 0, len(nodes))
 		for _, n := range nodes {
 			if s.tracked[n.Name] {
 				out = append(out, n)
+				present[n.Name] = true
+			}
+		}
+		// Synthesize placeholders for tracked nodes missing from the server.
+		for name := range s.tracked {
+			if !present[name] {
+				out = append(out, nodeEntry{Name: name, DisplayName: name, Gone: true})
 			}
 		}
 		nodes = out
@@ -304,6 +383,17 @@ func buildNodeRows(nodes []nodeEntry, tracked map[string]bool) ([][]components.C
 	rows := make([][]components.Cell, len(nodes))
 	keys := make([]string, len(nodes))
 	for i, n := range nodes {
+		if n.Gone {
+			rows[i] = []components.Cell{
+				{Text: "GONE", Color: theme.ColorError},
+				{Text: "★ " + n.DisplayName, Color: theme.ColorError},
+				{Text: "—", Dim: true},
+				{Text: "", Dim: true},
+				{Text: "deleted on server", Dim: true},
+			}
+			keys[i] = n.Name
+			continue
+		}
 		statusText := theme.SymOnline + " on"
 		statusColor := theme.ColorSuccess
 		if n.Offline {
@@ -403,8 +493,7 @@ func (s NodeScreen) Update(msg tea.Msg) (NodeScreen, tea.Cmd) {
 		prevQuery := s.search.Query()
 		s.search, cmd = s.search.Update(msg)
 		if s.search.Query() != prevQuery || !s.search.Editing() {
-			rows, keys := buildNodeRows(s.filteredNodes(), s.tracked)
-			s.table.SetRows(rows, keys)
+			s.rebuildRows()
 		}
 		return s, cmd
 	}
@@ -438,8 +527,8 @@ func (s NodeScreen) Update(msg tea.Msg) (NodeScreen, tea.Cmd) {
 			s.nodes = msg.nodes
 			s.tracked = msg.tracked
 			s.baseURL = msg.baseURL
-			rows, keys := buildNodeRows(s.filteredNodes(), s.tracked)
-			s.table.SetRows(rows, keys)
+			s.refresh.Reset()
+			s.rebuildRows()
 		}
 		return s, s.maybeFetchDetail()
 
@@ -468,6 +557,16 @@ func (s NodeScreen) Update(msg tea.Msg) (NodeScreen, tea.Cmd) {
 		return s, nil
 
 	case components.ConfirmResultMsg:
+		if msg.Yes && s.pendingBulkDelete && s.action == "delete" {
+			s.pendingBulkDelete = false
+			s.action = ""
+			names := make([]string, 0, s.table.SelectedCount())
+			for k := range s.table.Selected() {
+				names = append(names, k)
+			}
+			s.table.ClearSelection()
+			return s, s.doBulkDeleteNodes(names)
+		}
 		if msg.Yes && s.pending != "" {
 			switch s.action {
 			case "delete":
@@ -478,6 +577,7 @@ func (s NodeScreen) Update(msg tea.Msg) (NodeScreen, tea.Cmd) {
 		}
 		s.pending = ""
 		s.action = ""
+		s.pendingBulkDelete = false
 		return s, nil
 
 	case tea.WindowSizeMsg:
@@ -496,35 +596,29 @@ func (s NodeScreen) Update(msg tea.Msg) (NodeScreen, tea.Cmd) {
 		switch msg.String() {
 		case "ctrl+a":
 			s.showAll = !s.showAll
-			rows, keys := buildNodeRows(s.filteredNodes(), s.tracked)
-			s.table.SetRows(rows, keys)
+			_ = internaldb.SetScopeShowAll(s.db, "node", s.showAll)
+			s.rebuildRows()
+			return s, nil
+		case "esc":
+			if s.table.SelectedCount() > 0 {
+				s.table.ClearSelection()
+			}
 			return s, nil
 		case "i":
-			if c := s.current(); c != nil && s.baseURL != "" {
-				profileName := controller.GetActiveProfileName(s.db)
-				_ = internaldb.TrackResource(s.db, "node", c.Name, profileName, s.baseURL)
-				if s.tracked == nil {
-					s.tracked = make(map[string]bool)
-				}
-				s.tracked[c.Name] = true
-				rows, keys := buildNodeRows(s.filteredNodes(), s.tracked)
-				s.table.SetRows(rows, keys)
-			}
+			s.trackNames(s.selectionOrCursor(), true)
+			s.table.ClearSelection()
+			s.rebuildRows()
 			return s, nil
 		case "u":
-			if c := s.current(); c != nil && s.baseURL != "" {
-				profileName := controller.GetActiveProfileName(s.db)
-				_ = internaldb.UntrackResource(s.db, "node", c.Name, profileName, s.baseURL)
-				delete(s.tracked, c.Name)
-				rows, keys := buildNodeRows(s.filteredNodes(), s.tracked)
-				s.table.SetRows(rows, keys)
-			}
+			s.trackNames(s.selectionOrCursor(), false)
+			s.table.ClearSelection()
+			s.rebuildRows()
 			return s, nil
 		case "/":
 			s.search.Open()
 			return s, nil
 		case "enter":
-			if c := s.current(); c != nil {
+			if c := s.current(); c != nil && !c.Gone {
 				s.activeNode = c.Name
 				s.menu.Show("Node: "+c.Name, []string{"Edit", "Toggle Offline", "Manage Approvals", "Delete"})
 			}
@@ -537,26 +631,33 @@ func (s NodeScreen) Update(msg tea.Msg) (NodeScreen, tea.Cmd) {
 				{Label: "Executors", Value: "1"},
 				{Label: "Labels", Placeholder: "linux docker"},
 				{Label: "Description"},
-				{Label: "Launcher", Value: "ssh", Placeholder: "ssh | jnlp"},
+				{Label: "Launcher", Value: "ssh", Options: []string{"ssh", "jnlp"}},
 				{Label: "SSH Host", Placeholder: "192.168.1.100"},
 				{Label: "SSH Port", Value: "22"},
 				{Label: "Credential ID", Placeholder: "ssh-cred-id"},
-				{Label: "Availability", Value: "always", Placeholder: "always | demand"},
+				{Label: "Availability", Value: "always", Options: []string{"always", "demand"}},
 				{Label: "In-demand Delay", Value: "0", Placeholder: "minutes (demand only)"},
 				{Label: "Idle Delay", Value: "1", Placeholder: "minutes (demand only)"},
 			})
 			return s, nil
 		case "ctrl+d":
+			if n := s.table.SelectedCount(); n > 0 {
+				s.action = "delete"
+				s.pendingBulkDelete = true
+				s.modal.Show("Delete nodes", fmt.Sprintf("Delete %d selected node(s)? This cannot be undone.", n))
+				return s, nil
+			}
 			if c := s.current(); c != nil {
 				s.pending = c.Name
 				s.action = "delete"
 				s.modal.Show("Delete node", fmt.Sprintf("Delete node '%s'? This cannot be undone.", c.Name))
 			}
 			return s, nil
-		case "f":
+		case "f", "F":
 			s.autoRefresh = !s.autoRefresh
 			if s.autoRefresh {
-				return s, nodeScheduleAutoRefresh()
+				s.refresh.Reset()
+				return s, s.nodeScheduleAutoRefresh()
 			}
 			return s, nil
 		case "r":
@@ -566,7 +667,7 @@ func (s NodeScreen) Update(msg tea.Msg) (NodeScreen, tea.Cmd) {
 	}
 
 	if _, ok := msg.(nodeAutoRefreshMsg); ok && s.autoRefresh {
-		return s, tea.Batch(s.fetchNodes(), nodeScheduleAutoRefresh())
+		return s, tea.Batch(s.fetchNodes(), s.nodeScheduleAutoRefresh())
 	}
 
 	before := s.table.Cursor()
@@ -582,7 +683,7 @@ func (s NodeScreen) Update(msg tea.Msg) (NodeScreen, tea.Cmd) {
 // background fetch when the highlighted node hasn't been seen yet.
 func (s *NodeScreen) maybeFetchDetail() tea.Cmd {
 	c := s.current()
-	if c == nil {
+	if c == nil || c.Gone {
 		s.nodeConfig = nil
 		return nil
 	}
@@ -611,6 +712,9 @@ func (s NodeScreen) handleNodeMenuSelect(idx int) (NodeScreen, tea.Cmd) {
 		port := "22"
 		credID := ""
 		availability := "always"
+		inDemand := "0"
+		idleDelay := "1"
+		controlled := "no"
 		if cfg != nil {
 			launcher = cfg.LauncherType
 			host = cfg.Host
@@ -620,17 +724,25 @@ func (s NodeScreen) handleNodeMenuSelect(idx int) (NodeScreen, tea.Cmd) {
 			credID = cfg.CredID
 			availability = cfg.Availability
 			remoteDir = cfg.RemoteDir
+			inDemand = strconv.Itoa(cfg.InDemandDelay)
+			idleDelay = strconv.Itoa(cfg.IdleDelay)
+			if cfg.ControlledAgent {
+				controlled = "yes"
+			}
 		}
 		s.form.Show("Edit Node: "+c.Name, []formField{
 			{Label: "Remote Dir", Value: remoteDir, Placeholder: "/home/jenkins"},
 			{Label: "Executors", Value: strconv.Itoa(c.Executors)},
 			{Label: "Labels", Value: c.Labels},
 			{Label: "Description", Value: c.Description},
-			{Label: "Launcher", Value: launcher, Placeholder: "ssh | jnlp"},
+			{Label: "Launcher", Value: launcher, Options: []string{"ssh", "jnlp"}},
 			{Label: "SSH Host", Value: host},
 			{Label: "SSH Port", Value: port},
 			{Label: "Credential ID", Value: credID},
-			{Label: "Availability", Value: availability, Placeholder: "always | demand"},
+			{Label: "Availability", Value: availability, Options: []string{"always", "demand"}},
+			{Label: "In-demand Delay", Value: inDemand, Placeholder: "minutes (demand only)"},
+			{Label: "Idle Delay", Value: idleDelay, Placeholder: "minutes (demand only)"},
+			{Label: "Controlled Agent", Value: controlled, Options: []string{"no", "yes"}},
 		})
 	case 1: // Toggle Offline
 		if c := s.current(); c != nil {
@@ -640,6 +752,14 @@ func (s NodeScreen) handleNodeMenuSelect(idx int) (NodeScreen, tea.Cmd) {
 		}
 	case 2: // Manage Approvals
 		if c := s.current(); c != nil {
+			// Precondition: approvals only apply to controlled agents. Warn (but
+			// still allow viewing) when the node isn't controlled — enabling it
+			// is done via Edit → Controlled Agent = yes.
+			if cfg := s.nodeConfig; cfg != nil && !cfg.ControlledAgent {
+				s.detail.Show("Not a controlled agent",
+					fmt.Sprintf("Node %q is not a controlled agent, so folder approvals have no effect.\n\nEnable it first via Edit → Controlled Agent = yes.", c.Name))
+				return s, nil
+			}
 			s.grantNodeName = c.Name
 			s.grantList.Show(
 				"Approved Folders — "+c.Name,
@@ -762,6 +882,16 @@ func (s NodeScreen) handleNodeFormSubmit(vals []string) tea.Cmd {
 		if avail != "" {
 			opts.Availability = &avail
 		}
+		if n, err := strconv.Atoi(strGet(vals, 9)); err == nil {
+			opts.InDemandDelay = &n
+		}
+		if n, err := strconv.Atoi(strGet(vals, 10)); err == nil {
+			opts.IdleDelay = &n
+		}
+		if v := strGet(vals, 11); v == "yes" || v == "no" {
+			ctrl := v == "yes"
+			opts.ControlledAgent = &ctrl
+		}
 		return s.doUpdateNode(s.activeNode, opts)
 	}
 	return nil
@@ -796,6 +926,9 @@ func (s NodeScreen) View() string {
 	}
 	if s.autoRefresh {
 		title += " " + theme.StyleDim.Render("[auto]")
+	}
+	if n := s.table.SelectedCount(); n > 0 {
+		title += " " + theme.StyleWarning.Render(fmt.Sprintf("[%d selected]", n))
 	}
 	sb.WriteString(title + "\n")
 	if s.loading {
@@ -842,8 +975,12 @@ func (s NodeScreen) View() string {
 			sb.WriteString(theme.StyleDim.Render("labels " + c.Labels))
 			sb.WriteString("\n")
 		}
+		if s.baseURL != "" && !c.Gone {
+			sb.WriteString(theme.StyleSubtle.Render(strings.TrimRight(s.baseURL, "/") + "/computer/" + c.Name + "/"))
+			sb.WriteString("\n")
+		}
 	}
 
-	sb.WriteString(theme.StyleDim.Render("Enter menu  ·  ^N new  ·  ^A mine/all  ·  i track  ·  u untrack  ·  ^D delete  ·  f auto-refresh  ·  r refresh  ·  / search"))
+	sb.WriteString(theme.StyleDim.Render("Enter menu  ·  Space select  ·  ^N new  ·  ^A mine/all  ·  i/u track  ·  ^D delete  ·  F auto  ·  r refresh  ·  / search"))
 	return sb.String()
 }

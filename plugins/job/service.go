@@ -437,6 +437,50 @@ func ListJobsInFolder(ctx context.Context, client *api.Client, folder string) ([
 	return listJobsAt(ctx, client, folder)
 }
 
+// QueueItem is a pending build in the Jenkins queue. TaskURL matches JobDTO.URL
+// (the reliable join key — names collide across folders).
+type QueueItem struct {
+	ID      int
+	TaskURL string
+	Why     string
+	Stuck   bool
+}
+
+// GetJobParamDefs fetches a job's config.xml and returns its build-parameter
+// definitions (name + default). Empty when the job has no parameters. Used by
+// the TUI run flow to prompt for parameter values before triggering a build.
+func GetJobParamDefs(ctx context.Context, client *api.Client, name string) ([]StringParamDef, error) {
+	xmlStr, err := GetJobConfigXML(ctx, client, name)
+	if err != nil {
+		return nil, err
+	}
+	return ParamDefsFromStrings(extractParamDefs(xmlStr)), nil
+}
+
+// ListQueue fetches pending builds from /queue/api/json. Best-effort: returns
+// an empty slice (not an error) on failure so the caller can render normally.
+func ListQueue(ctx context.Context, client *api.Client) []QueueItem {
+	var raw struct {
+		Items []struct {
+			ID    int    `json:"id"`
+			Why   string `json:"why"`
+			Stuck bool   `json:"stuck"`
+			Task  struct {
+				URL string `json:"url"`
+			} `json:"task"`
+		} `json:"items"`
+	}
+	tree := "items[id,why,stuck,task[name,url]]"
+	if err := client.GetJSON(ctx, "/queue/api/json?tree="+url.QueryEscape(tree), &raw); err != nil {
+		return nil
+	}
+	out := make([]QueueItem, 0, len(raw.Items))
+	for _, it := range raw.Items {
+		out = append(out, QueueItem{ID: it.ID, TaskURL: it.Task.URL, Why: it.Why, Stuck: it.Stuck})
+	}
+	return out
+}
+
 // GetPipelineScript fetches the Jenkinsfile/script body for a pipeline job.
 // Returns "" when not found (non-pipeline job or no script configured).
 func GetPipelineScript(ctx context.Context, client *api.Client, name string) (string, error) {

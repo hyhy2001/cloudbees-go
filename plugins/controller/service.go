@@ -148,11 +148,12 @@ func GetControllerCapabilities(ctx context.Context, database *sql.DB, cjocClient
 // Fields default to zero values on a failed sub-request rather than failing
 // the whole call.
 type Info struct {
-	Class           string
-	NodeDescription string
-	NumExecutors    int
-	UserID          string
-	UserFullName    string
+	Class            string
+	NodeDescription  string
+	NumExecutors     int
+	NumFreeExecutors int
+	UserID           string
+	UserFullName     string
 }
 
 // GetControllerInfo fetches basic controller + current-user identity info,
@@ -160,7 +161,7 @@ type Info struct {
 func GetControllerInfo(ctx context.Context, client *api.Client) Info {
 	var info Info
 	var wg sync.WaitGroup
-	wg.Add(2)
+	wg.Add(3)
 	go func() {
 		defer wg.Done()
 		var raw struct {
@@ -180,6 +181,18 @@ func GetControllerInfo(ctx context.Context, client *api.Client) Info {
 		}
 		if err := client.GetJSON(ctx, "/me/api/json?tree=id,fullName", &raw); err == nil {
 			info.UserID, info.UserFullName = raw.ID, raw.FullName
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		var raw struct {
+			BusyExecutors  int `json:"busyExecutors"`
+			TotalExecutors int `json:"totalExecutors"`
+		}
+		if err := client.GetJSON(ctx, "/computer/api/json?tree=busyExecutors,totalExecutors", &raw); err == nil {
+			if free := raw.TotalExecutors - raw.BusyExecutors; free >= 0 {
+				info.NumFreeExecutors = free
+			}
 		}
 	}()
 	wg.Wait()

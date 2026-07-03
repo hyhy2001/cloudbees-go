@@ -128,6 +128,30 @@ func UpdatePipelineJob(ctx context.Context, client *api.Client, name string, f P
 	return client.PostXML(ctx, "/job/"+JobPathSegments(name)+"/config.xml", merged)
 }
 
+// UpdatePipelineFromTUI patches a pipeline job's description, script, and node
+// from the TUI edit form. It resolves the script (file path or inline), injects
+// the agent label, validates against Jenkins, and auto-detects parameters —
+// bundling the steps the CLI does inline so the TUI needn't reach for the
+// unexported helpers. Empty script → only the description is updated.
+func UpdatePipelineFromTUI(ctx context.Context, client *api.Client, name, description, script, node string) error {
+	f := PipelineUpdateFields{Description: &description}
+	if strings.TrimSpace(script) != "" {
+		origScript, err := ResolveScript(script)
+		if err != nil {
+			return err
+		}
+		finalScript := injectAgent(origScript, node)
+		if err := ValidatePipelineScript(ctx, client, origScript); err != nil {
+			return err
+		}
+		f.Script = &finalScript
+		if autoParams := parseParametersFromScript(finalScript); len(autoParams) > 0 {
+			f.ParamDefs = &autoParams
+		}
+	}
+	return UpdatePipelineJob(ctx, client, name, f)
+}
+
 // ListControlledAgents exposes listControlledAgents for the TUI's
 // GrantListOverlay (folder → agents vantage point).
 func ListControlledAgents(client *api.Client, folderName string) ([]controlledAgentGrant, error) {
