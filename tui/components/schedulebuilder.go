@@ -72,6 +72,7 @@ type ScheduleBuilder struct {
 	cursor  int
 	jobName string
 	visible bool
+	Width   int // terminal width for border sizing
 }
 
 // Show opens the builder with an initial spec (e.g. job.ParseCron(existingCron)).
@@ -282,5 +283,5 @@ func (b ScheduleBuilder) View() string {
 	}
 	hint += " · Enter save · Esc cancel"
 	sb.WriteString(theme.StyleDim.Render(hint))
-	return sb.String()
+	return theme.BorderBox(sb.String(), "info", b.Width)
 }

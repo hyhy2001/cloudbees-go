@@ -280,6 +280,8 @@ func (s NodeScreen) Update(msg tea.Msg) (NodeScreen, tea.Cmd) {
 		s.width = msg.Width
 		s.height = msg.Height
 		s.table.SetSize(msg.Width, maxInt(5, msg.Height-12))
+		s.modal.SetWidth(msg.Width)
+		s.detail.SetWidth(msg.Width)
 		return s, nil
 
 	case tea.KeyMsg:

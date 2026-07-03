@@ -68,6 +68,7 @@ type formOverlay struct {
 	cursor  int
 	buf     []string
 	visible bool
+	width   int // terminal width for border sizing
 }
 
 func (f *formOverlay) Show(title string, fields []formField) {
@@ -217,7 +218,7 @@ func (f formOverlay) View() string {
 	}
 	sb.WriteString("\n")
 	sb.WriteString(theme.StyleDim.Render("Tab/↑↓ move · ←→ cycle (select) · Enter next/submit · Esc cancel"))
-	return sb.String()
+	return theme.BorderBox(sb.String(), "info", f.width)
 }
 
 // ── context menu ──────────────────────────────────────────────────────────────
@@ -227,6 +228,7 @@ type menuOverlay struct {
 	items   []string
 	cursor  int
 	visible bool
+	width   int // terminal width for border sizing
 }
 
 func (m *menuOverlay) Show(title string, items []string) {
@@ -299,7 +301,7 @@ func (m menuOverlay) View() string {
 	}
 	sb.WriteString("\n")
 	sb.WriteString(theme.StyleDim.Render("↑↓ move  ·  1–9 pick  ·  Enter run  ·  Esc back"))
-	return sb.String()
+	return theme.BorderBox(sb.String(), "info", m.width)
 }
 
 // ── JobScreen ─────────────────────────────────────────────────────────────────
@@ -1015,6 +1017,14 @@ func (s JobScreen) Update(msg tea.Msg) (JobScreen, tea.Cmd) {
 		s.width = msg.Width
 		s.height = msg.Height
 		s.table.SetSize(msg.Width, maxInt(5, msg.Height-12))
+		s.menu.width = msg.Width
+		s.form.width = msg.Width
+		s.confirm.SetWidth(msg.Width)
+		s.message.SetWidth(msg.Width)
+		s.schedule.Width = msg.Width
+		s.email.Width = msg.Width
+		s.params.Width = msg.Width
+		s.agents.Width = msg.Width
 		return s, nil
 	}
 
