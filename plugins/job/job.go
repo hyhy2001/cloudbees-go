@@ -916,6 +916,7 @@ func jobUpdateCmd(database *sql.DB, dbPath string) *cobra.Command {
 				return err
 			}
 			_ = cache.InvalidateResource(database, "job")
+			cli.Success(fmt.Sprintf("Updated freestyle job '%s'", name))
 			return nil
 		},
 	}
@@ -993,6 +994,7 @@ func jobUpdateCmd(database *sql.DB, dbPath string) *cobra.Command {
 				return err
 			}
 			_ = cache.InvalidateResource(database, "job")
+			cli.Success(fmt.Sprintf("Updated pipeline job '%s'", name))
 			return nil
 		},
 	}

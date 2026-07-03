@@ -595,15 +595,37 @@ func nodeCopyCmd(database *sql.DB, dbPath string) *cobra.Command {
 				return err
 			}
 			srcName, newName := args[0], args[1]
-			body := "name=" + url.QueryEscape(newName) + "&mode=copy&from=" + url.QueryEscape(srcName)
+			// Try doCreateItem copy mode first; fall back to XML-copy if blocked.
+			body := "name=" + url.QueryEscape(newName) + "&mode=copy&from=" + url.QueryEscape(srcName) + "&type=hudson.slaves.DumbSlave"
 			resp, err := client.Do(cmd.Context(), "POST", "/computer/doCreateItem", strings.NewReader(body), "application/x-www-form-urlencoded")
 			if err != nil {
 				return err
 			}
-			defer resp.Body.Close()
-			if resp.StatusCode >= 300 && resp.StatusCode != 302 {
-				b, _ := io.ReadAll(resp.Body)
-				return fmt.Errorf("copy node: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+			copyOK := resp.StatusCode < 300 || resp.StatusCode == 302
+			resp.Body.Close()
+
+			if !copyOK {
+				// Fall back: read source config.xml, replace <name>, create via JNLP doCreateItem, then patch XML
+				srcXML, xmlErr := GetNodeConfigXML(cmd.Context(), client, srcName)
+				if xmlErr != nil {
+					return fmt.Errorf("copy node: server rejected copy and source XML unreadable: %w", xmlErr)
+				}
+				// Create blank JNLP node with same name
+				cfg := parseNodeConfigXML(srcXML)
+				jnlpBody := buildNodeFormPayload(newName, cfg.remoteDir, 1, "", "", "", 22, "", "", cfg.availability, cfg.inDemandDelay, cfg.idleDelay)
+				r2, e2 := client.Do(cmd.Context(), "POST", "/computer/doCreateItem", strings.NewReader(jnlpBody), "application/x-www-form-urlencoded")
+				if e2 != nil {
+					return e2
+				}
+				if r2.StatusCode >= 300 && r2.StatusCode != 302 {
+					b, _ := io.ReadAll(r2.Body)
+					r2.Body.Close()
+					return fmt.Errorf("copy node: HTTP %d: %s", r2.StatusCode, strings.TrimSpace(string(b)))
+				}
+				r2.Body.Close()
+				// Patch with source XML (name replaced)
+				patchedXML := strings.Replace(srcXML, "<name>"+srcName+"</name>", "<name>"+newName+"</name>", 1)
+				_ = client.PostXML(cmd.Context(), "/computer/"+nodeSeg(newName)+"/config.xml", patchedXML)
 			}
 			_ = cache.InvalidateResource(database, "node")
 			profile := getProfileName(database)

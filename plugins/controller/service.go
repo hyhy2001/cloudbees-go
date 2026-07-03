@@ -63,13 +63,13 @@ type Capabilities struct {
 	CanCreateCred bool
 }
 
-// probeOKStatuses are HTTP responses Jenkins gives for a well-formed create
-// request lacking only the resource-specific payload — i.e. "you're allowed,
-// the request just wasn't complete" as opposed to 401/403 (not allowed).
-var probeOKStatuses = map[int]bool{400: true, 405: true}
+// probeOKStatuses are HTTP responses Jenkins gives for an authorized create
+// attempt. 400/405 means "allowed but incomplete", 302 means "created/redirected".
+// 401/403/404 means no permission or endpoint missing.
+var probeOKStatuses = map[int]bool{302: true, 400: true, 405: true}
 
 func probeCanCreate(ctx context.Context, client *api.Client, path string) bool {
-	resp, err := client.Do(ctx, "POST", path, nil, "application/x-www-form-urlencoded")
+	resp, err := client.DoNoRedirect(ctx, "POST", path, nil, "application/x-www-form-urlencoded")
 	if err != nil {
 		return false
 	}
@@ -120,7 +120,7 @@ func GetControllerCapabilities(ctx context.Context, database *sql.DB, cjocClient
 	}
 
 	realURL := resolveURL(ctx, cjocClient, cjocURL)
-	client := api.New(realURL, cjocClient.BasicToken)
+	client := api.CloneWithBaseURL(cjocClient, realURL)
 
 	var wg sync.WaitGroup
 	wg.Add(3)

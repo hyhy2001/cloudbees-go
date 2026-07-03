@@ -28,6 +28,19 @@ type Client struct {
 	crumbAt    time.Time
 }
 
+// CloneWithBaseURL returns a new Client with the same transport and token but a different base URL.
+// Preserves TLS settings (insecure transport, etc.) from the original client.
+func CloneWithBaseURL(c *Client, baseURL string) *Client {
+	return &Client{
+		BaseURL:    strings.TrimRight(baseURL, "/"),
+		BasicToken: c.BasicToken,
+		HTTPClient: &http.Client{
+			Timeout:   c.HTTPClient.Timeout,
+			Transport: c.HTTPClient.Transport,
+		},
+	}
+}
+
 // New creates a Client for the given base URL and basic auth token.
 func New(baseURL, basicToken string) *Client {
 	return &Client{
@@ -84,6 +97,41 @@ func (c *Client) fetchCrumb(ctx context.Context) error {
 	c.crumbField = body.CrumbRequestField
 	c.crumbAt = time.Now()
 	return nil
+}
+
+// DoNoRedirect is like Do but does not follow HTTP redirects (stops at the first 3xx).
+func (c *Client) DoNoRedirect(ctx context.Context, method, path string, body io.Reader, contentType string) (*http.Response, error) {
+	if method != http.MethodGet {
+		c.mu.Lock()
+		if !c.crumbValid() {
+			if err := c.fetchCrumb(ctx); err != nil {
+				c.mu.Unlock()
+				return nil, fmt.Errorf("crumb: %w", err)
+			}
+		}
+		c.mu.Unlock()
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, c.BaseURL+path, body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Basic "+c.BasicToken)
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	c.mu.Lock()
+	if c.crumb != "" {
+		req.Header.Set(c.crumbField, c.crumb)
+	}
+	c.mu.Unlock()
+
+	noRedirect := &http.Client{
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		Transport:     c.HTTPClient.Transport,
+		Timeout:       c.HTTPClient.Timeout,
+	}
+	return noRedirect.Do(req)
 }
 
 // Do executes an HTTP request with auth + crumb injection.
@@ -215,7 +263,8 @@ func (c *Client) PostFormGetLocation(ctx context.Context, path string, params ma
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
-		Timeout: 30 * time.Second,
+		Transport: c.HTTPClient.Transport,
+		Timeout:   30 * time.Second,
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+path, strings.NewReader(encoded))
