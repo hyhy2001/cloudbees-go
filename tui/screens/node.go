@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"bee/plugins/controller"
+	internaldb "bee/internal/db"
 	nodepkg "bee/plugins/node"
 	"bee/tui/components"
 	"bee/tui/theme"
@@ -43,8 +44,10 @@ type nodeEntry struct {
 }
 
 type nodesLoaded struct {
-	nodes []nodeEntry
-	err   error
+	nodes   []nodeEntry
+	tracked map[string]bool
+	baseURL string
+	err     error
 }
 
 type nodeActionDone struct {
@@ -84,6 +87,9 @@ type NodeScreen struct {
 	grantList      components.GrantListOverlay
 	grantNodeName  string // node currently shown in grantList
 	approveInput   formOverlay // single-field "folder name" form for adding approval
+	showAll        bool
+	tracked        map[string]bool
+	baseURL        string // active controller URL for track/untrack
 
 	// detail panel: config.xml digest for the highlighted node
 	nodeConfig      *nodepkg.NodeConfig
@@ -141,7 +147,13 @@ func (s NodeScreen) fetchNodes() tea.Cmd {
 				Description: n.Description,
 			})
 		}
-		return nodesLoaded{nodes: nodes}
+		profileName := controller.GetActiveProfileName(db)
+		trackedNames, _ := internaldb.ListTracked(db, "node", profileName, client.BaseURL)
+		tracked := make(map[string]bool, len(trackedNames))
+		for _, n := range trackedNames {
+			tracked[n] = true
+		}
+		return nodesLoaded{nodes: nodes, tracked: tracked, baseURL: client.BaseURL}
 	}
 }
 
@@ -264,13 +276,23 @@ func (s NodeScreen) fetchNodeConfig(name string) tea.Cmd {
 	}
 }
 
-// filteredNodes applies the search box filter to the full node list.
+// filteredNodes applies search + Mine/All filter to the full node list.
 func (s NodeScreen) filteredNodes() []nodeEntry {
-	if s.search.Query() == "" {
-		return s.nodes
+	nodes := s.nodes
+	if !s.showAll && len(s.tracked) > 0 {
+		out := make([]nodeEntry, 0, len(nodes))
+		for _, n := range nodes {
+			if s.tracked[n.Name] {
+				out = append(out, n)
+			}
+		}
+		nodes = out
 	}
-	out := make([]nodeEntry, 0, len(s.nodes))
-	for _, n := range s.nodes {
+	if s.search.Query() == "" {
+		return nodes
+	}
+	out := make([]nodeEntry, 0, len(nodes))
+	for _, n := range nodes {
 		if s.search.Matches(n.DisplayName + " " + n.Labels + " " + n.Description) {
 			out = append(out, n)
 		}
@@ -278,7 +300,7 @@ func (s NodeScreen) filteredNodes() []nodeEntry {
 	return out
 }
 
-func buildNodeRows(nodes []nodeEntry) ([][]components.Cell, []string) {
+func buildNodeRows(nodes []nodeEntry, tracked map[string]bool) ([][]components.Cell, []string) {
 	rows := make([][]components.Cell, len(nodes))
 	keys := make([]string, len(nodes))
 	for i, n := range nodes {
@@ -288,9 +310,13 @@ func buildNodeRows(nodes []nodeEntry) ([][]components.Cell, []string) {
 			statusText = theme.SymOffline + " off"
 			statusColor = theme.ColorWarning
 		}
+		name := n.DisplayName
+		if tracked[n.Name] {
+			name = "★ " + name
+		}
 		rows[i] = []components.Cell{
 			{Text: statusText, Color: statusColor},
-			{Text: n.DisplayName},
+			{Text: name},
 			{Text: strconv.Itoa(n.Executors)},
 			{Text: n.Labels},
 			{Text: n.Description},
@@ -377,7 +403,7 @@ func (s NodeScreen) Update(msg tea.Msg) (NodeScreen, tea.Cmd) {
 		prevQuery := s.search.Query()
 		s.search, cmd = s.search.Update(msg)
 		if s.search.Query() != prevQuery || !s.search.Editing() {
-			rows, keys := buildNodeRows(s.filteredNodes())
+			rows, keys := buildNodeRows(s.filteredNodes(), s.tracked)
 			s.table.SetRows(rows, keys)
 		}
 		return s, cmd
@@ -410,7 +436,9 @@ func (s NodeScreen) Update(msg tea.Msg) (NodeScreen, tea.Cmd) {
 		s.err = msg.err
 		if msg.err == nil {
 			s.nodes = msg.nodes
-			rows, keys := buildNodeRows(s.filteredNodes())
+			s.tracked = msg.tracked
+			s.baseURL = msg.baseURL
+			rows, keys := buildNodeRows(s.filteredNodes(), s.tracked)
 			s.table.SetRows(rows, keys)
 		}
 		return s, s.maybeFetchDetail()
@@ -466,6 +494,32 @@ func (s NodeScreen) Update(msg tea.Msg) (NodeScreen, tea.Cmd) {
 
 	case tea.KeyMsg:
 		switch msg.String() {
+		case "ctrl+a":
+			s.showAll = !s.showAll
+			rows, keys := buildNodeRows(s.filteredNodes(), s.tracked)
+			s.table.SetRows(rows, keys)
+			return s, nil
+		case "i":
+			if c := s.current(); c != nil && s.baseURL != "" {
+				profileName := controller.GetActiveProfileName(s.db)
+				_ = internaldb.TrackResource(s.db, "node", c.Name, profileName, s.baseURL)
+				if s.tracked == nil {
+					s.tracked = make(map[string]bool)
+				}
+				s.tracked[c.Name] = true
+				rows, keys := buildNodeRows(s.filteredNodes(), s.tracked)
+				s.table.SetRows(rows, keys)
+			}
+			return s, nil
+		case "u":
+			if c := s.current(); c != nil && s.baseURL != "" {
+				profileName := controller.GetActiveProfileName(s.db)
+				_ = internaldb.UntrackResource(s.db, "node", c.Name, profileName, s.baseURL)
+				delete(s.tracked, c.Name)
+				rows, keys := buildNodeRows(s.filteredNodes(), s.tracked)
+				s.table.SetRows(rows, keys)
+			}
+			return s, nil
 		case "/":
 			s.search.Open()
 			return s, nil
@@ -742,6 +796,11 @@ func (s NodeScreen) View() string {
 	}
 	var sb strings.Builder
 	title := theme.StyleTitle.Render(theme.SymOnline + " Nodes")
+	if !s.showAll {
+		title += " " + theme.StyleBlue.Render("[mine]")
+	} else {
+		title += " " + theme.StyleDim.Render("[all]")
+	}
 	if s.autoRefresh {
 		title += " " + theme.StyleDim.Render("[auto]")
 	}
@@ -792,6 +851,6 @@ func (s NodeScreen) View() string {
 		}
 	}
 
-	sb.WriteString(theme.StyleDim.Render("Enter menu  ·  ^N new  ·  ^D delete  ·  ^O offline  ·  f auto-refresh  ·  r refresh  ·  / search"))
+	sb.WriteString(theme.StyleDim.Render("Enter menu  ·  ^N new  ·  ^A mine/all  ·  i track  ·  u untrack  ·  ^D delete  ·  ^O offline  ·  f auto-refresh  ·  r refresh  ·  / search"))
 	return sb.String()
 }

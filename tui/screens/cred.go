@@ -9,6 +9,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	internaldb "bee/internal/db"
 	"bee/internal/session"
 	"bee/plugins/controller"
 	credpkg "bee/plugins/cred"
@@ -29,6 +30,8 @@ type credEntry struct {
 type credsLoaded struct {
 	creds    []credEntry
 	username string
+	tracked  map[string]bool
+	baseURL  string
 	err      error
 }
 
@@ -68,6 +71,11 @@ type CredScreen struct {
 
 	// form intent: "create-up", "create-st", "edit"
 	credFormIntent string
+
+	// Mine/All filter
+	showAll bool
+	tracked map[string]bool
+	baseURL string // active controller URL for track/untrack
 
 	// detail panel: username fetched from the highlighted credential's config.xml
 	credUsername      string
@@ -129,7 +137,14 @@ func (s CredScreen) fetchCreds() tea.Cmd {
 				Description: c.Description,
 			})
 		}
-		return credsLoaded{creds: creds, username: username}
+		ctrlKey := client.BaseURL + "." + store
+		profileName := controller.GetActiveProfileName(db)
+		trackedNames, _ := internaldb.ListTracked(db, "credential", profileName, ctrlKey)
+		tracked := make(map[string]bool, len(trackedNames))
+		for _, n := range trackedNames {
+			tracked[n] = true
+		}
+		return credsLoaded{creds: creds, username: username, tracked: tracked, baseURL: ctrlKey}
 	}
 }
 
@@ -189,13 +204,23 @@ func (s CredScreen) fetchCredConfig(id string) tea.Cmd {
 	}
 }
 
-// filteredCreds applies the search box filter to the full credential list.
+// filteredCreds applies Mine/All filter and search box filter.
 func (s CredScreen) filteredCreds() []credEntry {
-	if s.search.Query() == "" {
-		return s.creds
+	creds := s.creds
+	if !s.showAll && len(s.tracked) > 0 {
+		out := make([]credEntry, 0, len(creds))
+		for _, c := range creds {
+			if s.tracked[c.ID] {
+				out = append(out, c)
+			}
+		}
+		creds = out
 	}
-	out := make([]credEntry, 0, len(s.creds))
-	for _, c := range s.creds {
+	if s.search.Query() == "" {
+		return creds
+	}
+	out := make([]credEntry, 0, len(creds))
+	for _, c := range creds {
 		if s.search.Matches(c.ID + " " + c.Description + " " + c.TypeName) {
 			out = append(out, c)
 		}
@@ -203,12 +228,16 @@ func (s CredScreen) filteredCreds() []credEntry {
 	return out
 }
 
-func buildCredRows(creds []credEntry) ([][]components.Cell, []string) {
+func buildCredRows(creds []credEntry, tracked map[string]bool) ([][]components.Cell, []string) {
 	rows := make([][]components.Cell, len(creds))
 	keys := make([]string, len(creds))
 	for i, c := range creds {
+		id := c.ID
+		if tracked[c.ID] {
+			id = "★ " + id
+		}
 		rows[i] = []components.Cell{
-			{Text: c.ID},
+			{Text: id},
 			{Text: c.TypeName},
 			{Text: c.Scope, Dim: true},
 			{Text: c.Description},
@@ -265,7 +294,7 @@ func (s CredScreen) Update(msg tea.Msg) (CredScreen, tea.Cmd) {
 		prevQuery := s.search.Query()
 		s.search, cmd = s.search.Update(msg)
 		if s.search.Query() != prevQuery || !s.search.Editing() {
-			rows, keys := buildCredRows(s.filteredCreds())
+			rows, keys := buildCredRows(s.filteredCreds(), s.tracked)
 			s.table.SetRows(rows, keys)
 		}
 		return s, cmd
@@ -278,7 +307,9 @@ func (s CredScreen) Update(msg tea.Msg) (CredScreen, tea.Cmd) {
 		if msg.err == nil {
 			s.creds = msg.creds
 			s.username = msg.username
-			rows, keys := buildCredRows(s.filteredCreds())
+			s.tracked = msg.tracked
+			s.baseURL = msg.baseURL
+			rows, keys := buildCredRows(s.filteredCreds(), s.tracked)
 			s.table.SetRows(rows, keys)
 		}
 		return s, s.maybeFetchDetail()
@@ -293,15 +324,17 @@ func (s CredScreen) Update(msg tea.Msg) (CredScreen, tea.Cmd) {
 	case credActionDone:
 		if msg.err != nil {
 			s.detail.Show("Error", msg.err.Error())
-		} else {
-			s.detail.Show("Done", msg.label+" succeeded.")
-			if strings.HasPrefix(msg.label, "delete") {
-				delete(s.credUsernameCache, s.pending)
-				s.pending = ""
-			}
-			return s, s.fetchCreds()
+			return s, nil
 		}
-		return s, nil
+		if strings.HasPrefix(msg.label, "tracked") || strings.HasPrefix(msg.label, "untracked") {
+			return s, nil // optimistic update already applied
+		}
+		s.detail.Show("Done", msg.label+" succeeded.")
+		if strings.HasPrefix(msg.label, "delete") {
+			delete(s.credUsernameCache, s.pending)
+			s.pending = ""
+		}
+		return s, s.fetchCreds()
 
 	case components.ConfirmResultMsg:
 		if msg.Yes && s.pending != "" {
@@ -356,6 +389,27 @@ func (s CredScreen) Update(msg tea.Msg) (CredScreen, tea.Cmd) {
 			s.loading = true
 			s.credUsernameCache = make(map[string]string)
 			return s, s.fetchCreds()
+		case "ctrl+a":
+			s.showAll = !s.showAll
+			rows, keys := buildCredRows(s.filteredCreds(), s.tracked)
+			s.table.SetRows(rows, keys)
+			return s, nil
+		case "i":
+			if c := s.current(); c != nil {
+				s.tracked[c.ID] = true
+				rows, keys := buildCredRows(s.filteredCreds(), s.tracked)
+				s.table.SetRows(rows, keys)
+				return s, s.doTrackCred(c.ID, true)
+			}
+			return s, nil
+		case "u":
+			if c := s.current(); c != nil {
+				delete(s.tracked, c.ID)
+				rows, keys := buildCredRows(s.filteredCreds(), s.tracked)
+				s.table.SetRows(rows, keys)
+				return s, s.doTrackCred(c.ID, false)
+			}
+			return s, nil
 		case "r":
 			s.loading = true
 			return s, s.fetchCreds()
@@ -446,6 +500,24 @@ func (s CredScreen) currentByID(id string) *credEntry {
 	return nil
 }
 
+func (s CredScreen) doTrackCred(id string, track bool) tea.Cmd {
+	db, baseURL := s.db, s.baseURL
+	profileName := controller.GetActiveProfileName(db)
+	return func() tea.Msg {
+		if track {
+			_ = internaldb.TrackResource(db, "credential", profileName, baseURL, id)
+		} else {
+			_ = internaldb.UntrackResource(db, "credential", profileName, baseURL, id)
+		}
+		return credActionDone{label: func() string {
+			if track {
+				return "tracked " + id
+			}
+			return "untracked " + id
+		}()}
+	}
+}
+
 func (s CredScreen) handleCredFormSubmit(vals []string) tea.Cmd {
 	intent := s.credFormIntent
 	s.credFormIntent = ""
@@ -509,6 +581,13 @@ func (s CredScreen) View() string {
 	} else {
 		sb.WriteString(theme.StyleBlue.Render("[SYSTEM]"))
 	}
+	if len(s.tracked) > 0 || s.showAll {
+		if s.showAll {
+			sb.WriteString("  " + theme.StyleDim.Render("[all]"))
+		} else {
+			sb.WriteString("  " + theme.StyleWarning.Render("[mine]"))
+		}
+	}
 	sb.WriteString("\n")
 	if s.loading {
 		sb.WriteString(theme.StyleDim.Render(theme.SymLoading + " Loading credentials..."))
@@ -547,6 +626,6 @@ func (s CredScreen) View() string {
 		sb.WriteString("\n")
 	}
 
-	sb.WriteString(theme.StyleDim.Render("Enter menu  ·  ↑↓ move  ·  ^N new  ·  ^D delete  ·  S store  ·  r refresh  ·  / search"))
+	sb.WriteString(theme.StyleDim.Render("Enter menu  ·  ↑↓ move  ·  ^N new  ·  ^D delete  ·  i track  ·  u untrack  ·  ^A mine/all  ·  S store  ·  r refresh  ·  / search"))
 	return sb.String()
 }

@@ -10,6 +10,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	internaldb "bee/internal/db"
 	"bee/plugins/controller"
 	jobo "bee/plugins/job"
 	"bee/plugins/node"
@@ -28,9 +29,11 @@ type jobEntry struct {
 }
 
 type jobsLoaded struct {
-	jobs   []jobEntry
-	folder string // which folder these jobs belong to (empty = root)
-	err    error
+	jobs    []jobEntry
+	folder  string // which folder these jobs belong to (empty = root)
+	tracked map[string]bool
+	baseURL string
+	err     error
 }
 
 type jobOpDone struct {
@@ -402,6 +405,11 @@ type JobScreen struct {
 
 	// log viewer: progressive polling offset
 	logOffset int64
+
+	// Mine/All filter
+	showAll bool
+	tracked map[string]bool
+	baseURL string // active controller URL for track/untrack
 }
 
 // NewJobScreen constructs a JobScreen.
@@ -464,7 +472,13 @@ func (s JobScreen) fetchJobs() tea.Cmd {
 			}
 			entries = append(entries, e)
 		}
-		return jobsLoaded{jobs: entries, folder: folder}
+		profileName := controller.GetActiveProfileName(db)
+		trackedNames, _ := internaldb.ListTracked(db, "job", profileName, client.BaseURL)
+		tracked := make(map[string]bool, len(trackedNames))
+		for _, n := range trackedNames {
+			tracked[n] = true
+		}
+		return jobsLoaded{jobs: entries, folder: folder, tracked: tracked, baseURL: client.BaseURL}
 	}
 }
 
@@ -822,13 +836,24 @@ func (s JobScreen) doClone(src, dst string) tea.Cmd {
 
 func typeLabel(class string) string { return jobo.JobType(class) }
 
-// filteredJobs applies the search box filter to the full job list.
+// filteredJobs applies Mine/All filter and search box filter to the full job list.
 func (s JobScreen) filteredJobs() []jobEntry {
-	if s.search.Query() == "" {
-		return s.jobs
+	jobs := s.jobs
+	// Mine filter only at root (folder drill shows everything in subfolder)
+	if !s.showAll && s.currentFolder() == "" && len(s.tracked) > 0 {
+		out := make([]jobEntry, 0, len(jobs))
+		for _, j := range jobs {
+			if s.tracked[j.Name] {
+				out = append(out, j)
+			}
+		}
+		jobs = out
 	}
-	out := make([]jobEntry, 0, len(s.jobs))
-	for _, j := range s.jobs {
+	if s.search.Query() == "" {
+		return jobs
+	}
+	out := make([]jobEntry, 0, len(jobs))
+	for _, j := range jobs {
 		if s.search.Matches(j.Name + " " + j.Desc) {
 			out = append(out, j)
 		}
@@ -836,7 +861,7 @@ func (s JobScreen) filteredJobs() []jobEntry {
 	return out
 }
 
-func buildJobRows(jobs []jobEntry, currentFolder string) ([][]components.Cell, []string) {
+func buildJobRows(jobs []jobEntry, currentFolder string, tracked map[string]bool) ([][]components.Cell, []string) {
 	rows := make([][]components.Cell, len(jobs))
 	keys := make([]string, len(jobs))
 	for i, j := range jobs {
@@ -860,6 +885,9 @@ func buildJobRows(jobs []jobEntry, currentFolder string) ([][]components.Cell, [
 		// mark folders/multibranch as drillable
 		if typ == "FD" || typ == "MB" {
 			leafName = leafName + "/ " + theme.SymArrow
+		}
+		if tracked[j.Name] {
+			leafName = "★ " + leafName
 		}
 		rows[i] = []components.Cell{
 			{Text: label, Color: col},
@@ -1122,7 +1150,7 @@ func (s JobScreen) Update(msg tea.Msg) (JobScreen, tea.Cmd) {
 		prevQuery := s.search.Query()
 		s.search, cmd = s.search.Update(msg)
 		if s.search.Query() != prevQuery || !s.search.Editing() {
-			rows, keys := buildJobRows(s.filteredJobs(), s.currentFolder())
+			rows, keys := buildJobRows(s.filteredJobs(), s.currentFolder(), s.tracked)
 			s.table.SetRows(rows, keys)
 		}
 		return s, cmd
@@ -1139,7 +1167,9 @@ func (s JobScreen) Update(msg tea.Msg) (JobScreen, tea.Cmd) {
 		s.err = msg.err
 		if msg.err == nil {
 			s.jobs = msg.jobs
-			rows, keys := buildJobRows(s.filteredJobs(), s.currentFolder())
+			s.tracked = msg.tracked
+			s.baseURL = msg.baseURL
+			rows, keys := buildJobRows(s.filteredJobs(), s.currentFolder(), s.tracked)
 			s.table.SetRows(rows, keys)
 		}
 		return s, s.maybeFetchDetail()
@@ -1261,6 +1291,32 @@ func (s JobScreen) Update(msg tea.Msg) (JobScreen, tea.Cmd) {
 		switch km.String() {
 		case "/":
 			s.search.Open()
+			return s, nil
+		case "ctrl+a":
+			s.showAll = !s.showAll
+			rows, keys := buildJobRows(s.filteredJobs(), s.currentFolder(), s.tracked)
+			s.table.SetRows(rows, keys)
+			return s, nil
+		case "i":
+			if c := s.current(); c != nil && s.baseURL != "" {
+				profileName := controller.GetActiveProfileName(s.db)
+				_ = internaldb.TrackResource(s.db, "job", c.Name, profileName, s.baseURL)
+				if s.tracked == nil {
+					s.tracked = make(map[string]bool)
+				}
+				s.tracked[c.Name] = true
+				rows, keys := buildJobRows(s.filteredJobs(), s.currentFolder(), s.tracked)
+				s.table.SetRows(rows, keys)
+			}
+			return s, nil
+		case "u":
+			if c := s.current(); c != nil && s.baseURL != "" {
+				profileName := controller.GetActiveProfileName(s.db)
+				_ = internaldb.UntrackResource(s.db, "job", c.Name, profileName, s.baseURL)
+				delete(s.tracked, c.Name)
+				rows, keys := buildJobRows(s.filteredJobs(), s.currentFolder(), s.tracked)
+				s.table.SetRows(rows, keys)
+			}
 			return s, nil
 		case "backspace":
 			// drill back up one folder level
@@ -1648,6 +1704,13 @@ func (s JobScreen) View() string {
 		crumb := " › " + strings.Join(s.folderStack, " › ")
 		title += theme.StyleDim.Render(crumb) + theme.StyleDim.Render("  ↤ Backspace")
 	}
+	if s.currentFolder() == "" {
+		if !s.showAll {
+			title += " " + theme.StyleBlue.Render("[mine]")
+		} else {
+			title += " " + theme.StyleDim.Render("[all]")
+		}
+	}
 	if s.autoRefresh {
 		title += theme.StyleDim.Render("  [auto]")
 	}
@@ -1699,6 +1762,6 @@ func (s JobScreen) View() string {
 		}
 	}
 
-	sb.WriteString(theme.StyleDim.Render("Enter drill/menu  ·  ↑↓ move  ·  ⌫ up  ·  Ctrl+n new  ·  Ctrl+d delete  ·  A agents(FD)  ·  f auto  ·  r refresh  ·  / search"))
+	sb.WriteString(theme.StyleDim.Render("Enter drill/menu  ·  ↑↓ move  ·  ⌫ up  ·  Ctrl+n new  ·  Ctrl+d delete  ·  A agents(FD)  ·  ^A mine/all  ·  i track  ·  u untrack  ·  f auto  ·  r refresh  ·  / search"))
 	return sb.String()
 }
