@@ -59,6 +59,14 @@ func GetCredentialXML(ctx context.Context, client *api.Client, credID, username,
 	return getCredentialXML(client, credID, username, store)
 }
 
+// ExtractUsername reads the <username> element from a credential's config.xml,
+// or "" when the credential type has none (e.g. SecretText). Jenkins never
+// returns the password/secret (write-only), so username is all a detail panel
+// can safely show for a Username+Password credential.
+func ExtractUsername(xmlStr string) string {
+	return extractTagCred(xmlStr, "username")
+}
+
 // XMLEscape XML-escapes special characters.
 func XMLEscape(s string) string {
 	return xmlEscape(s)

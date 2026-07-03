@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"bee/plugins/controller"
@@ -328,7 +327,8 @@ type JobScreen struct {
 	db     *sql.DB
 	dbPath string
 
-	table   components.TableModel
+	table   components.DataTable
+	search  components.SearchBox
 	loading bool
 	err     error
 	jobs    []jobEntry
@@ -359,22 +359,27 @@ type JobScreen struct {
 
 	// "what did the form submission mean?"
 	formIntent string // "create-freestyle","create-pipeline","create-folder","edit-freestyle","edit-pipeline","add-agent"
+
+	// detail panel: config summary for the highlighted job (fetch-on-cursor-move)
+	detailSummary      *jobo.ConfigSummary
+	detailSummaryCache map[string]jobo.ConfigSummary
 }
 
 // NewJobScreen constructs a JobScreen.
 func NewJobScreen(db *sql.DB, dbPath string) JobScreen {
-	cols := []table.Column{
-		{Title: "Name", Width: 36},
-		{Title: "Type", Width: 6},
-		{Title: "Status", Width: 12},
-		{Title: "Build #", Width: 9},
-		{Title: "Description", Width: 28},
+	cols := []components.Column{
+		{Header: "Status", Width: 12},
+		{Header: "T", Width: 3},
+		{Header: "Name", Width: 42, Flex: true},
+		{Header: "Build #", Width: 9},
+		{Header: "Description", Width: 24, Flex: true},
 	}
 	return JobScreen{
-		db:      db,
-		dbPath:  dbPath,
-		table:   components.New(cols, nil),
-		loading: true,
+		db:                 db,
+		dbPath:             dbPath,
+		table:              components.NewDataTable(cols),
+		loading:            true,
+		detailSummaryCache: make(map[string]jobo.ConfigSummary),
 	}
 }
 
@@ -383,13 +388,13 @@ func (s JobScreen) Init() tea.Cmd {
 	return s.fetchJobs()
 }
 
-// InputCaptured reports whether any overlay/form/menu is currently visible,
-// meaning this screen wants raw keys (digits, tab, q) routed to it instead of
-// being intercepted by the app shell for tab-switching/quit.
+// InputCaptured reports whether any overlay/form/menu/search is currently
+// visible, meaning this screen wants raw keys (digits, tab, q) routed to it
+// instead of being intercepted by the app shell for tab-switching/quit.
 func (s JobScreen) InputCaptured() bool {
 	return s.schedule.Visible() || s.email.Visible() || s.params.Visible() ||
 		s.agents.Visible() || s.form.Visible() || s.menu.Visible() ||
-		s.confirm.Visible() || s.message.Visible()
+		s.confirm.Visible() || s.message.Visible() || s.search.Editing()
 }
 
 // ── data fetches ──────────────────────────────────────────────────────────────
@@ -465,6 +470,30 @@ func (s JobScreen) fetchConfigSummary(name string) tea.Cmd {
 		}
 		sum, err := jobo.GetJobConfigSummary(context.Background(), client, name)
 		return configLoaded{summary: sum, err: err}
+	}
+}
+
+// detailSummaryLoaded carries a job's config summary for the detail panel
+// (fetch-on-cursor-move, cached by caller — distinct from configLoaded, which
+// drives the Edit form and always re-fetches).
+type detailSummaryLoaded struct {
+	name    string
+	summary jobo.ConfigSummary
+	ok      bool
+}
+
+func (s JobScreen) fetchDetailSummary(name string) tea.Cmd {
+	db, dbPath := s.db, s.dbPath
+	return func() tea.Msg {
+		client, err := controller.GetActiveControllerClient(db, dbPath)
+		if err != nil {
+			return detailSummaryLoaded{name: name}
+		}
+		sum, err := jobo.GetJobConfigSummary(context.Background(), client, name)
+		if err != nil {
+			return detailSummaryLoaded{name: name}
+		}
+		return detailSummaryLoaded{name: name, summary: sum, ok: true}
 	}
 }
 
@@ -651,21 +680,46 @@ func (s JobScreen) doRevokeAgent(folderName, grantID string) tea.Cmd {
 
 func typeLabel(class string) string { return jobo.JobType(class) }
 
-func buildJobRows(jobs []jobEntry) []table.Row {
-	rows := make([]table.Row, len(jobs))
+// filteredJobs applies the search box filter to the full job list.
+func (s JobScreen) filteredJobs() []jobEntry {
+	if s.search.Query() == "" {
+		return s.jobs
+	}
+	out := make([]jobEntry, 0, len(s.jobs))
+	for _, j := range s.jobs {
+		if s.search.Matches(j.Name + " " + j.Desc) {
+			out = append(out, j)
+		}
+	}
+	return out
+}
+
+func buildJobRows(jobs []jobEntry) ([][]components.Cell, []string) {
+	rows := make([][]components.Cell, len(jobs))
+	keys := make([]string, len(jobs))
 	for i, j := range jobs {
-		label, _ := theme.JobStatusLabel(j.Color)
+		label, col := theme.JobStatusLabel(j.Color)
 		build := "—"
 		if j.Build > 0 {
 			build = fmt.Sprintf("#%d", j.Build)
 		}
-		desc := j.Desc
-		if len(desc) > 28 {
-			desc = desc[:25] + "..."
+		typ := typeLabel(j.Class)
+		typColor := ""
+		if typ == "FD" {
+			typColor = theme.ColorYellow
+		} else if typ == "PL" {
+			typColor = theme.ColorBlue
 		}
-		rows[i] = table.Row{j.Name, typeLabel(j.Class), label, build, desc}
+		rows[i] = []components.Cell{
+			{Text: label, Color: col},
+			{Text: typ, Color: typColor},
+			{Text: j.Name},
+			{Text: build},
+			{Text: j.Desc, Dim: true},
+		}
+		keys[i] = j.Name
 	}
-	return rows
+	return rows, keys
 }
 
 func maxInt(a, b int) int {
@@ -675,23 +729,33 @@ func maxInt(a, b int) int {
 	return b
 }
 
+// current returns the job entry at the table cursor, or nil.
+func (s JobScreen) current() *jobEntry {
+	filtered := s.filteredJobs()
+	i := s.table.Cursor()
+	if i < 0 || i >= len(filtered) {
+		return nil
+	}
+	return &filtered[i]
+}
+
 // selectedJobType returns the two-letter type ("FS"/"PL"/"FD"/"??") of the
 // currently selected row, or "" when nothing is selected.
 func (s JobScreen) selectedJobType() string {
-	row := s.table.SelectedRow()
-	if row == nil {
+	c := s.current()
+	if c == nil {
 		return ""
 	}
-	return row[1]
+	return typeLabel(c.Class)
 }
 
 // selectedJobName returns the Name of the currently selected row, or "".
 func (s JobScreen) selectedJobName() string {
-	row := s.table.SelectedRow()
-	if row == nil {
+	c := s.current()
+	if c == nil {
 		return ""
 	}
-	return row[0]
+	return c.Name
 }
 
 // menuItemsFor builds the context-menu item list for the given job type,
@@ -865,6 +929,16 @@ func (s JobScreen) Update(msg tea.Msg) (JobScreen, tea.Cmd) {
 		s.message, cmd = s.message.Update(msg)
 		return s, cmd
 	}
+	if s.search.Editing() {
+		var cmd tea.Cmd
+		prevQuery := s.search.Query()
+		s.search, cmd = s.search.Update(msg)
+		if s.search.Query() != prevQuery || !s.search.Editing() {
+			rows, keys := buildJobRows(s.filteredJobs())
+			s.table.SetRows(rows, keys)
+		}
+		return s, cmd
+	}
 
 	// ── async results ──────────────────────────────────────────────────────
 	switch msg := msg.(type) {
@@ -873,9 +947,10 @@ func (s JobScreen) Update(msg tea.Msg) (JobScreen, tea.Cmd) {
 		s.err = msg.err
 		if msg.err == nil {
 			s.jobs = msg.jobs
-			s.table.SetRows(buildJobRows(s.jobs))
+			rows, keys := buildJobRows(s.filteredJobs())
+			s.table.SetRows(rows, keys)
 		}
-		return s, nil
+		return s, s.maybeFetchDetail()
 
 	case nodeNamesLoaded:
 		if msg.err == nil {
@@ -898,6 +973,16 @@ func (s JobScreen) Update(msg tea.Msg) (JobScreen, tea.Cmd) {
 	case configLoaded:
 		if msg.err == nil && s.formIntent == "edit-freestyle" {
 			return s.openEditFreestyle(msg.summary)
+		}
+		return s, nil
+
+	case detailSummaryLoaded:
+		if msg.ok {
+			sum := msg.summary
+			s.detailSummaryCache[msg.name] = sum
+			if c := s.current(); c != nil && c.Name == msg.name {
+				s.detailSummary = &sum
+			}
 		}
 		return s, nil
 
@@ -929,13 +1014,16 @@ func (s JobScreen) Update(msg tea.Msg) (JobScreen, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		s.width = msg.Width
 		s.height = msg.Height
-		s.table.SetSize(msg.Width, maxInt(5, msg.Height-8))
+		s.table.SetSize(msg.Width, maxInt(5, msg.Height-12))
 		return s, nil
 	}
 
 	// ── list-view keys ─────────────────────────────────────────────────────
 	if km, ok := msg.(tea.KeyMsg); ok {
 		switch km.String() {
+		case "/":
+			s.search.Open()
+			return s, nil
 		case "enter":
 			name := s.selectedJobName()
 			typ := s.selectedJobType()
@@ -973,9 +1061,30 @@ func (s JobScreen) Update(msg tea.Msg) (JobScreen, tea.Cmd) {
 		}
 	}
 
+	before := s.table.Cursor()
 	var cmd tea.Cmd
 	s.table, cmd = s.table.Update(msg)
+	if s.table.Cursor() != before {
+		return s, tea.Batch(cmd, s.maybeFetchDetail())
+	}
 	return s, cmd
+}
+
+// maybeFetchDetail serves the detail-panel config summary from cache, or
+// kicks off a background fetch when the highlighted job hasn't been seen yet.
+func (s *JobScreen) maybeFetchDetail() tea.Cmd {
+	c := s.current()
+	if c == nil {
+		s.detailSummary = nil
+		return nil
+	}
+	if cached, ok := s.detailSummaryCache[c.Name]; ok {
+		sum := cached
+		s.detailSummary = &sum
+		return nil
+	}
+	s.detailSummary = nil
+	return s.fetchDetailSummary(c.Name)
 }
 
 // ── menu action dispatch ──────────────────────────────────────────────────────
@@ -1259,8 +1368,39 @@ func (s JobScreen) View() string {
 		sb.WriteString(theme.StyleDim.Render("No jobs. Press Ctrl+n to create one."))
 		return sb.String()
 	}
+	if sv := s.search.View(); sv != "" {
+		sb.WriteString(sv + "\n")
+	}
 	sb.WriteString(s.table.View())
 	sb.WriteString("\n")
+
+	if c := s.current(); c != nil {
+		sb.WriteString("\n")
+		sb.WriteString(theme.StyleTitle.Render(c.Name))
+		if c.Build > 0 {
+			sb.WriteString(theme.StyleDim.Render(fmt.Sprintf("  #%d", c.Build)))
+		}
+		sb.WriteString("\n")
+		sb.WriteString(theme.StyleDim.Render("type ") + theme.StyleBlue.Render(typeLabel(c.Class)))
+		if s.detailSummary != nil {
+			sum := s.detailSummary
+			if sum.Schedule != "" && sum.Schedule != "-" {
+				sb.WriteString(theme.StyleDim.Render("   schedule ") + sum.Schedule)
+			}
+			if sum.Node != "" && sum.Node != "-" {
+				sb.WriteString(theme.StyleDim.Render("   node ") + sum.Node)
+			}
+			if sum.Email != "" && sum.Email != "-" {
+				sb.WriteString(theme.StyleDim.Render("   email ") + sum.Email)
+			}
+		}
+		sb.WriteString("\n")
+		if c.Desc != "" {
+			sb.WriteString(theme.StyleDim.Render(c.Desc))
+			sb.WriteString("\n")
+		}
+	}
+
 	sb.WriteString(theme.StyleDim.Render("Enter menu  ·  ↑↓ move  ·  Ctrl+n new  ·  Ctrl+d delete  ·  A agents(FD)  ·  r refresh  ·  / search"))
 	return sb.String()
 }

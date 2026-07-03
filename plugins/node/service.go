@@ -83,6 +83,38 @@ func GetNodeConfigXML(ctx context.Context, client *api.Client, name string) (str
 	return string(b), err
 }
 
+// NodeConfig is the exported, human-readable digest of a node's config.xml —
+// launcher type/host/port/remoteDir — for TUI/CLI detail display.
+type NodeConfig struct {
+	LauncherType    string
+	Host            string
+	Port            int
+	CredID          string
+	JavaPath        string
+	Availability    string
+	InDemandDelay   int
+	IdleDelay       int
+	RemoteDir       string
+	ControlledAgent bool
+}
+
+// ParseNodeConfig parses a node's config.xml into a NodeConfig for display.
+func ParseNodeConfig(xmlStr string) NodeConfig {
+	cfg := parseNodeConfigXML(xmlStr)
+	return NodeConfig{
+		LauncherType:    cfg.launcherType,
+		Host:            cfg.host,
+		Port:            cfg.port,
+		CredID:          cfg.credID,
+		JavaPath:        cfg.javaPath,
+		Availability:    cfg.availability,
+		InDemandDelay:   cfg.inDemandDelay,
+		IdleDelay:       cfg.idleDelay,
+		RemoteDir:       cfg.remoteDir,
+		ControlledAgent: cfg.controlledAgent,
+	}
+}
+
 // ── Folders Plus controlled-agent handshake ───────────────────────────────────
 
 const controlledAgentPropTag = "com.cloudbees.jenkins.plugins.foldersplus.SecurityTokensNodeProperty"

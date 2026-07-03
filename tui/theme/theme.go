@@ -24,20 +24,23 @@ const (
 
 // Symbols used throughout the TUI.
 const (
-	SymOK       = "✓"
-	SymFail     = "✗"
-	SymArrow    = "▸"
-	SymLoading  = "…"
-	SymSep      = "─"
-	SymVBar     = "│"
-	SymOnline   = "●"
-	SymOffline  = "○"
-	SymSelected = "▶"
-	SymTracked  = "★"
-	SymWarn     = "⚠"
-	SymGear     = "⚙"
-	SymBee      = "🐝"
-	SymRunning  = "⟳"
+	SymOK        = "✓"
+	SymFail      = "✗"
+	SymArrow     = "▸"
+	SymArrowLeft = "◂"
+	SymLoading   = "…"
+	SymSep       = "─"
+	SymVBar      = "│"
+	SymOnline    = "●"
+	SymOffline   = "○"
+	SymSelected  = "▶"
+	SymTracked   = "★"
+	SymWarn      = "⚠"
+	SymGear      = "⚙"
+	SymBee       = "🐝"
+	SymRunning   = "⟳"
+	SymCheck     = "☑"
+	SymUncheck   = "☐"
 )
 
 // Lipgloss styles.

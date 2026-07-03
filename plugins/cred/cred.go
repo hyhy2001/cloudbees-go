@@ -133,6 +133,28 @@ func xmlEscape(s string) string {
 	return s
 }
 
+// extractTagCred extracts the text content of a simple non-nested XML tag,
+// unescaping basic entities. Returns "" when the tag is absent.
+func extractTagCred(xmlStr, tag string) string {
+	open := "<" + tag + ">"
+	closeTag := "</" + tag + ">"
+	i := strings.Index(xmlStr, open)
+	if i < 0 {
+		return ""
+	}
+	rest := xmlStr[i+len(open):]
+	j := strings.Index(rest, closeTag)
+	if j < 0 {
+		return ""
+	}
+	v := rest[:j]
+	v = strings.ReplaceAll(v, "&lt;", "<")
+	v = strings.ReplaceAll(v, "&gt;", ">")
+	v = strings.ReplaceAll(v, "&quot;", `"`)
+	v = strings.ReplaceAll(v, "&amp;", "&")
+	return v
+}
+
 // getCredentialXML fetches the config.xml for a credential.
 func getCredentialXML(client *api.Client, credID, username, store string) (string, error) {
 	seg := getUserSeg(username, store)

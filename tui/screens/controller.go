@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"bee/internal/api"
@@ -45,7 +44,8 @@ type ctrlInfoLoaded struct {
 type ControllerScreen struct {
 	db         *sql.DB
 	dbPath     string
-	table      components.TableModel
+	table      components.DataTable
+	search     components.SearchBox
 	detail     components.MessageModal
 	loading    bool
 	err        error
@@ -57,16 +57,17 @@ type ControllerScreen struct {
 
 // NewControllerScreen creates a new ControllerScreen.
 func NewControllerScreen(database *sql.DB, dbPath string, activeName string) ControllerScreen {
-	cols := []table.Column{
-		{Title: "Active", Width: 7},
-		{Title: "Name", Width: 30},
-		{Title: "Description", Width: 28},
-		{Title: "Status", Width: 8},
+	cols := []components.Column{
+		{Header: " ", Width: 3},
+		{Header: "Name", Width: 30, Flex: true},
+		{Header: "Type", Width: 18},
+		{Header: "URL", Width: 40, Flex: true},
+		{Header: "Status", Width: 8},
 	}
 	return ControllerScreen{
 		db:         database,
 		dbPath:     dbPath,
-		table:      components.New(cols, nil),
+		table:      components.NewDataTable(cols),
 		loading:    true,
 		activeName: activeName,
 	}
@@ -77,11 +78,11 @@ func (s ControllerScreen) Init() tea.Cmd {
 	return s.fetchControllers()
 }
 
-// InputCaptured reports whether the info/detail modal is currently visible,
-// meaning this screen wants raw keys routed to it instead of being
-// intercepted by the app shell for tab-switching/quit.
+// InputCaptured reports whether the info/detail modal is currently visible or
+// the search box is being edited, meaning this screen wants raw keys routed
+// to it instead of being intercepted by the app shell for tab-switching/quit.
 func (s ControllerScreen) InputCaptured() bool {
-	return s.detail.Visible()
+	return s.detail.Visible() || s.search.Editing()
 }
 
 func (s ControllerScreen) fetchControllers() tea.Cmd {
@@ -136,24 +137,74 @@ func (s ControllerScreen) doFetchInfo(name, ctrlURL string) tea.Cmd {
 	}
 }
 
-func buildControllerRows(ctrls []ctrlEntry, active string) []table.Row {
-	rows := make([]table.Row, len(ctrls))
+// filteredControllers applies the search box filter to the full controller list.
+func (s ControllerScreen) filteredControllers() []ctrlEntry {
+	if !s.search.Active() && s.search.Query() == "" {
+		return s.ctrls
+	}
+	out := make([]ctrlEntry, 0, len(s.ctrls))
+	for _, c := range s.ctrls {
+		if s.search.Matches(c.Name + " " + c.Description + " " + c.Class) {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+func buildControllerRows(ctrls []ctrlEntry, active string) ([][]components.Cell, []string) {
+	rows := make([][]components.Cell, len(ctrls))
+	keys := make([]string, len(ctrls))
 	for i, c := range ctrls {
 		indicator := " "
+		indicatorColor := ""
 		if c.Name == active {
 			indicator = theme.SymSelected
+			indicatorColor = theme.ColorSuccess
 		}
-		status := "online"
+		statusText := "online"
+		statusColor := theme.ColorSuccess
 		if c.Offline {
-			status = "offline"
+			statusText = "offline"
+			statusColor = theme.ColorWarning
 		}
-		desc := c.Description
-		if len(desc) > 28 {
-			desc = desc[:25] + "..."
+		rows[i] = []components.Cell{
+			{Text: indicator, Color: indicatorColor},
+			{Text: c.Name},
+			{Text: typeLabelController(c.Class), Color: theme.ColorBlue},
+			{Text: c.URL, Dim: true},
+			{Text: statusText, Color: statusColor},
 		}
-		rows[i] = table.Row{indicator, c.Name, desc, status}
+		keys[i] = c.Name
 	}
-	return rows
+	return rows, keys
+}
+
+// typeLabelController mirrors typeLabel() in controller/screen.tsx: the last
+// dot-separated segment of the Jenkins _class name, or "Unknown" if blank.
+func typeLabelController(class string) string {
+	if class == "" {
+		return "Unknown"
+	}
+	if strings.Contains(class, "ManagedMaster") {
+		return "Managed Master"
+	}
+	if strings.Contains(class, "ConnectedMaster") {
+		return "Connected Master"
+	}
+	if idx := strings.LastIndex(class, "."); idx >= 0 {
+		return class[idx+1:]
+	}
+	return class
+}
+
+// current returns the controller entry at the table cursor, or nil.
+func (s ControllerScreen) current() *ctrlEntry {
+	filtered := s.filteredControllers()
+	i := s.table.Cursor()
+	if i < 0 || i >= len(filtered) {
+		return nil
+	}
+	return &filtered[i]
 }
 
 // Update handles messages and key input.
@@ -163,6 +214,15 @@ func (s ControllerScreen) Update(msg tea.Msg) (ControllerScreen, tea.Cmd) {
 		s.detail, cmd = s.detail.Update(msg)
 		return s, cmd
 	}
+	if s.search.Editing() {
+		var cmd tea.Cmd
+		s.search, cmd = s.search.Update(msg)
+		if !s.search.Editing() {
+			rows, keys := buildControllerRows(s.filteredControllers(), s.activeName)
+			s.table.SetRows(rows, keys)
+		}
+		return s, cmd
+	}
 
 	switch msg := msg.(type) {
 	case controllersLoaded:
@@ -170,7 +230,8 @@ func (s ControllerScreen) Update(msg tea.Msg) (ControllerScreen, tea.Cmd) {
 		s.err = msg.err
 		if msg.err == nil {
 			s.ctrls = msg.ctrls
-			s.table.SetRows(buildControllerRows(s.ctrls, s.activeName))
+			rows, keys := buildControllerRows(s.filteredControllers(), s.activeName)
+			s.table.SetRows(rows, keys)
 		}
 		return s, nil
 
@@ -180,7 +241,8 @@ func (s ControllerScreen) Update(msg tea.Msg) (ControllerScreen, tea.Cmd) {
 		} else {
 			s.activeName = msg.name
 			s.detail.Show("Selected", fmt.Sprintf("Active controller: %s", msg.name))
-			s.table.SetRows(buildControllerRows(s.ctrls, s.activeName))
+			rows, keys := buildControllerRows(s.filteredControllers(), s.activeName)
+			s.table.SetRows(rows, keys)
 		}
 		return s, nil
 
@@ -199,39 +261,26 @@ func (s ControllerScreen) Update(msg tea.Msg) (ControllerScreen, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		s.width = msg.Width
 		s.height = msg.Height
-		s.table.SetSize(msg.Width, maxInt(5, msg.Height-8))
+		s.table.SetSize(msg.Width, maxInt(5, msg.Height-12))
 		return s, nil
 
 	case tea.KeyMsg:
 		switch msg.String() {
+		case "/":
+			s.search.Open()
+			return s, nil
 		case "enter":
-			row := s.table.SelectedRow()
-			if row == nil {
+			c := s.current()
+			if c == nil {
 				return s, nil
 			}
-			name := row[1]
-			var ctrlURL string
-			for _, c := range s.ctrls {
-				if c.Name == name {
-					ctrlURL = c.URL
-					break
-				}
-			}
-			return s, s.doFetchInfo(name, ctrlURL)
+			return s, s.doFetchInfo(c.Name, c.URL)
 		case "s":
-			row := s.table.SelectedRow()
-			if row == nil {
+			c := s.current()
+			if c == nil {
 				return s, nil
 			}
-			name := row[1]
-			var ctrlURL string
-			for _, c := range s.ctrls {
-				if c.Name == name {
-					ctrlURL = c.URL
-					break
-				}
-			}
-			return s, s.doSelect(name, ctrlURL)
+			return s, s.doSelect(c.Name, c.URL)
 		case "r":
 			s.loading = true
 			return s, s.fetchControllers()
@@ -266,8 +315,37 @@ func (s ControllerScreen) View() string {
 		sb.WriteString(theme.StyleDim.Render("No controllers found."))
 		return sb.String()
 	}
+	if sv := s.search.View(); sv != "" {
+		sb.WriteString(sv + "\n")
+	}
 	sb.WriteString(s.table.View())
 	sb.WriteString("\n")
+
+	if c := s.current(); c != nil {
+		sb.WriteString("\n")
+		sb.WriteString(theme.StyleTitle.Render(c.Name))
+		sb.WriteString("  ")
+		if c.Offline {
+			sb.WriteString(theme.StyleWarning.Render(theme.SymOffline + " offline"))
+		} else {
+			sb.WriteString(theme.StyleSuccess.Render(theme.SymOnline + " online"))
+		}
+		if c.Name == s.activeName {
+			sb.WriteString(theme.StyleTitle.Render("  " + theme.SymSelected + " active"))
+		}
+		sb.WriteString("\n")
+		sb.WriteString(theme.StyleDim.Render("type ") + theme.StyleBlue.Render(typeLabelController(c.Class)))
+		sb.WriteString("\n")
+		if c.URL != "" {
+			sb.WriteString(theme.StyleSubtle.Render(c.URL))
+			sb.WriteString("\n")
+		}
+		if c.Description != "" {
+			sb.WriteString(theme.StyleDim.Render(c.Description))
+			sb.WriteString("\n")
+		}
+	}
+
 	sb.WriteString(theme.StyleDim.Render("Enter info  ·  s select  ·  ↑↓ move  ·  r refresh  ·  / search"))
 	return sb.String()
 }
