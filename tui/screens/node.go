@@ -634,7 +634,7 @@ func (s NodeScreen) Update(msg tea.Msg) (NodeScreen, tea.Cmd) {
 			s.nodeFormIntent = "create"
 			s.form.Show("Create New Node", []formField{
 				{Label: "Name", Required: true, Placeholder: "my-agent"},
-				{Label: "Remote Dir", Required: true, Placeholder: "/home/jenkins"},
+				{Label: "Remote Dir", Required: true, Placeholder: "e.g. /home/jenkins"},
 				{Label: "Executors", Value: "1"},
 				{Label: "Labels", Placeholder: "linux docker"},
 				{Label: "Description"},
@@ -793,7 +793,9 @@ func (s NodeScreen) handleNodeFormSubmit(vals []string) tea.Cmd {
 	switch intent {
 	case "create":
 		if len(vals) < 2 || strings.TrimSpace(vals[0]) == "" || strings.TrimSpace(vals[1]) == "" {
-			return nil
+			return func() tea.Msg {
+				return nodeActionDone{label: "create", err: fmt.Errorf("Name and Remote Dir are required")}
+			}
 		}
 		name := strings.TrimSpace(vals[0])
 		exec := 1

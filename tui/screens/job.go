@@ -100,7 +100,8 @@ type formOverlay struct {
 	cursor  int
 	buf     []string
 	visible bool
-	width   int // terminal width for border sizing
+	width   int    // terminal width for border sizing
+	errMsg  string // validation message shown below the fields
 }
 
 func (f *formOverlay) Show(title string, fields []formField) {
@@ -112,6 +113,7 @@ func (f *formOverlay) Show(title string, fields []formField) {
 	}
 	f.cursor = 0
 	f.visible = true
+	f.errMsg = ""
 }
 
 func (f *formOverlay) Hide()        { f.visible = false }
@@ -148,20 +150,19 @@ func (f formOverlay) Update(msg tea.Msg) (formOverlay, tea.Cmd) {
 		f.cursor = (f.cursor + len(f.fields) - 1) % len(f.fields)
 		return f, nil
 	case "enter":
-		if len(cur.Options) > 0 {
-			// cycle and advance if not last
-			opts := cur.Options
-			idx := 0
-			for i, o := range opts {
-				if o == f.buf[f.cursor] {
-					idx = i
-					break
+		// Enter advances (and submits on the last field) regardless of field
+		// type; option fields are cycled with ←→, so Enter must not be trapped
+		// into cycling — otherwise a form ending in a dropdown can never submit.
+		if f.cursor == len(f.fields)-1 {
+			// Enforce required fields before submitting — jump to the first
+			// empty one and show why, rather than submitting a bad payload.
+			for i, fl := range f.fields {
+				if fl.Required && strings.TrimSpace(f.buf[i]) == "" {
+					f.cursor = i
+					f.errMsg = fl.Label + " is required"
+					return f, nil
 				}
 			}
-			f.buf[f.cursor] = opts[(idx+1)%len(opts)]
-			return f, nil
-		}
-		if f.cursor == len(f.fields)-1 {
 			vals := append([]string{}, f.buf...)
 			f.visible = false
 			return f, func() tea.Msg { return FormSubmitMsg{Values: vals} }
@@ -202,11 +203,14 @@ func (f formOverlay) Update(msg tea.Msg) (formOverlay, tea.Cmd) {
 			v := f.buf[f.cursor]
 			if len(v) > 0 {
 				f.buf[f.cursor] = v[:len(v)-1]
+				f.errMsg = ""
 			}
 		case tea.KeyRunes:
 			f.buf[f.cursor] += string(km.Runes)
+			f.errMsg = ""
 		case tea.KeySpace:
 			f.buf[f.cursor] += " "
+			f.errMsg = ""
 		}
 	}
 	return f, nil
@@ -249,6 +253,11 @@ func (f formOverlay) View() string {
 			}
 		}
 		sb.WriteString(labelStyle.Render(marker+" "+fixWidth(fl.Label, 16)+" ") + display)
+		sb.WriteString("\n")
+	}
+	if f.errMsg != "" {
+		sb.WriteString("\n")
+		sb.WriteString(theme.StyleError.Render(theme.SymFail + " " + f.errMsg))
 		sb.WriteString("\n")
 	}
 	sb.WriteString("\n")
