@@ -470,12 +470,12 @@ func (s NodeScreen) Update(msg tea.Msg) (NodeScreen, tea.Cmd) {
 		}
 		return s, cmd
 	}
+	if sel, ok := msg.(MenuSelectMsg); ok {
+		return s.handleNodeMenuSelect(sel.Index)
+	}
 	if s.menu.Visible() {
 		var cmd tea.Cmd
 		s.menu, cmd = s.menu.Update(msg)
-		if sel, ok := msg.(MenuSelectMsg); ok {
-			return s.handleNodeMenuSelect(sel.Index)
-		}
 		return s, cmd
 	}
 	if s.modal.Visible() {

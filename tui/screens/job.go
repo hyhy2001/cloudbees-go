@@ -1314,15 +1314,16 @@ func (s JobScreen) Update(msg tea.Msg) (JobScreen, tea.Cmd) {
 		}
 		return s, cmd
 	}
+	if sel, ok := msg.(MenuSelectMsg); ok {
+		_, actions := menuItemsFor(s.activeJobType)
+		if sel.Index < len(actions) {
+			return s.handleMenuAction(actions[sel.Index])
+		}
+		return s, nil
+	}
 	if s.menu.Visible() {
 		var cmd tea.Cmd
 		s.menu, cmd = s.menu.Update(msg)
-		if sel, ok := msg.(MenuSelectMsg); ok {
-			_, actions := menuItemsFor(s.activeJobType)
-			if sel.Index < len(actions) {
-				return s.handleMenuAction(actions[sel.Index])
-			}
-		}
 		return s, cmd
 	}
 	if s.confirm.Visible() {

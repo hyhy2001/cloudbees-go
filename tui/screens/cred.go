@@ -297,12 +297,14 @@ func (s CredScreen) Update(msg tea.Msg) (CredScreen, tea.Cmd) {
 		}
 		return s, cmd
 	}
+	// MenuSelectMsg arrives one cycle after the menu hides itself, so handle it
+	// before the visibility gate below (which would otherwise swallow it).
+	if sel, ok := msg.(MenuSelectMsg); ok {
+		return s.handleCredMenuSelect(sel.Index)
+	}
 	if s.menu.Visible() {
 		var cmd tea.Cmd
 		s.menu, cmd = s.menu.Update(msg)
-		if sel, ok := msg.(MenuSelectMsg); ok {
-			return s.handleCredMenuSelect(sel.Index)
-		}
 		return s, cmd
 	}
 	if s.modal.Visible() {
@@ -501,14 +503,14 @@ func (s CredScreen) handleCredMenuSelect(idx int) (CredScreen, tea.Cmd) {
 			s.form.Show("New Credential: Username+Password", []formField{
 				{Label: "ID", Placeholder: "my-cred-id"},
 				{Label: "Username", Required: true},
-				{Label: "Password", Required: true},
+				{Label: "Password", Required: true, Password: true},
 				{Label: "Description"},
 			})
 		} else {
 			s.credFormIntent = "create-st"
 			s.form.Show("New Credential: Secret Text", []formField{
 				{Label: "ID", Placeholder: "my-secret-id"},
-				{Label: "Secret", Required: true},
+				{Label: "Secret", Required: true, Password: true},
 				{Label: "Description"},
 			})
 		}
