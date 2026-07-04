@@ -1213,13 +1213,12 @@ func (s JobScreen) openMenu(name, typ string) JobScreen {
 func (s JobScreen) Update(msg tea.Msg) (JobScreen, tea.Cmd) {
 	// ── overlay priority — highest first ───────────────────────────────────
 
-	// Log viewer and script viewer take absolute priority.
+	// Log viewer and script viewer take absolute priority. (LogViewerResult
+	// arrives deferred, after the viewer has hidden itself, so it never reaches
+	// this gate — openLogViewer resets logOffset on the next open anyway.)
 	if s.logViewer.Visible() {
 		var cmd tea.Cmd
 		s.logViewer, cmd = s.logViewer.Update(msg)
-		if _, ok := msg.(components.LogViewerResult); ok {
-			s.logOffset = 0
-		}
 		return s, cmd
 	}
 	if s.scriptView.Visible() {
