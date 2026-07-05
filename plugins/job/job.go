@@ -27,6 +27,15 @@ type controlledAgentGrant struct {
 	GrantID   string
 }
 
+// trunc caps s to n runes, matching the TS list columns' .slice(0, n).
+func trunc(s string, n int) string {
+	r := []rune(s)
+	if len(r) > n {
+		return string(r[:n])
+	}
+	return s
+}
+
 func getProfileName(database *sql.DB) string {
 	name, _ := session.GetActiveProfileName(database)
 	return name
@@ -290,14 +299,20 @@ func jobListCmd(database *sql.DB, dbPath string) *cobra.Command {
 			profile := getProfileName(database)
 			ctrlBase := client.BaseURL
 
+			// jobRow mirrors the TS list row: name[:30], type, color[:14],
+			// the bare last-build number (or "-"), description[:30].
+			jobRow := func(j JobDTO) []string {
+				build := "-"
+				if j.LastBuild != nil {
+					build = fmt.Sprintf("%d", j.LastBuild.Number)
+				}
+				return []string{trunc(j.Name, 30), JobType(j.Class), trunc(MapColor(j.Color), 14), build, trunc(j.Description, 30)}
+			}
+
 			var rows [][]string
 			if flagAll {
 				for _, j := range jobs {
-					lastBuild := "-"
-					if j.LastBuild != nil {
-						lastBuild = fmt.Sprintf("#%d %s", j.LastBuild.Number, j.LastBuild.Result)
-					}
-					rows = append(rows, []string{j.Name, JobType(j.Class), MapColor(j.Color), lastBuild, j.Description})
+					rows = append(rows, jobRow(j))
 				}
 			} else {
 				tracked, _ := db.ListTracked(database, "job", profile, ctrlBase)
@@ -311,21 +326,17 @@ func jobListCmd(database *sql.DB, dbPath string) *cobra.Command {
 				}
 				for _, j := range jobs {
 					if trackedSet[j.Name] {
-						lastBuild := "-"
-						if j.LastBuild != nil {
-							lastBuild = fmt.Sprintf("#%d %s", j.LastBuild.Number, j.LastBuild.Result)
-						}
-						rows = append(rows, []string{j.Name, JobType(j.Class), MapColor(j.Color), lastBuild, j.Description})
+						rows = append(rows, jobRow(j))
 					}
 				}
 				for n := range trackedSet {
 					if !serverNames[n] {
-						rows = append(rows, []string{n, "?", "[DELETED]", "-", "[DELETED_ON_SERVER]"})
+						rows = append(rows, []string{trunc(n, 30), "?", "[DELETED]", "-", "[DELETED_ON_SERVER]"})
 					}
 				}
 			}
-			cli.Table([]string{"Name", "Type", "Status", "Last Build", "Description"}, rows)
-			fmt.Printf("  %d job(s)\n", len(rows))
+			cli.Table([]string{"Name", "Type", "Status", "Build#", "Description"}, rows)
+			fmt.Printf("  %d job(s)  [FS=Freestyle  PL=Pipeline  FD=Folder]\n", len(rows))
 			return nil
 		},
 	}
@@ -831,17 +842,31 @@ func jobStatusCmd(database *sql.DB, dbPath string) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if len(builds) == 0 {
+				cli.Info("INFO No builds found.")
+				return nil
+			}
 			rows := make([][]string, len(builds))
 			for i, b := range builds {
-				dur := fmt.Sprintf("%.0fs", float64(b.Duration)/1000)
-				ts := time.Unix(b.Timestamp/1000, 0).Format("2006-01-02 15:04")
-				status := b.Result
-				if b.Building {
-					status = "RUNNING"
+				dur := "-"
+				if b.Duration != 0 {
+					dur = fmt.Sprintf("%ds", b.Duration/1000)
 				}
-				rows[i] = []string{fmt.Sprintf("#%d", b.Number), status, ts, dur}
+				ts := "-"
+				if b.Timestamp != 0 {
+					ts = time.Unix(b.Timestamp/1000, 0).UTC().Format("2006-01-02 15:04")
+				}
+				result := b.Result
+				if result == "" {
+					if b.Building {
+						result = "RUNNING"
+					} else {
+						result = "-"
+					}
+				}
+				rows[i] = []string{fmt.Sprintf("%d", b.Number), result, dur, ts}
 			}
-			cli.Table([]string{"Build", "Result", "Started", "Duration"}, rows)
+			cli.Table([]string{"Build#", "Result", "Duration", "Timestamp"}, rows)
 			return nil
 		},
 	}

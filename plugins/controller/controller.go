@@ -90,7 +90,7 @@ func listCmd(database *sql.DB, dbPath string) *cobra.Command {
 			activeName, _, _ := getActiveController(database)
 			rows := make([][]string, len(controllers))
 			for i, c := range controllers {
-				marker := " "
+				marker := ""
 				if c.Name == activeName {
 					marker = "*"
 				}
@@ -104,7 +104,7 @@ func listCmd(database *sql.DB, dbPath string) *cobra.Command {
 				}
 				rows[i] = []string{marker, c.Name, desc, status}
 			}
-			cli.Table([]string{"", "Name", "Description", "Status"}, rows)
+			cli.Table([]string{"Active", "Name", "Description", "Status"}, rows)
 			fmt.Printf("  %d controller(s)\n", len(controllers))
 			return nil
 		},

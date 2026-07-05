@@ -172,13 +172,17 @@ func profilesCmd(db *sql.DB) *cobra.Command {
 			}
 			rows := make([][]string, len(profiles))
 			for i, p := range profiles {
-				marker := " "
+				activeMark := ""
 				if p.Name == active {
-					marker = "▸"
+					activeMark = "*"
 				}
-				rows[i] = []string{marker, p.Name, p.Username, p.ServerURL}
+				defaultMark := ""
+				if p.IsDefault {
+					defaultMark = "*"
+				}
+				rows[i] = []string{activeMark, p.Name, p.ServerURL, p.Username, defaultMark}
 			}
-			cli.Table([]string{"", "Profile", "Username", "Server"}, rows)
+			cli.Table([]string{"Active", "Profile", "Server", "Username", "Default"}, rows)
 			return nil
 		},
 	}

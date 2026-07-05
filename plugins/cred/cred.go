@@ -89,6 +89,11 @@ func listCredentials(database *sql.DB, client *api.Client, store, username strin
 		}
 		return nil, err
 	}
+	for i := range result.Credentials {
+		if result.Credentials[i].Scope == "" {
+			result.Credentials[i].Scope = "GLOBAL" // API omits scope; match TS default
+		}
+	}
 	return result.Credentials, nil
 }
 

@@ -43,7 +43,11 @@ func ListCredentials(ctx context.Context, client *api.Client, store, username st
 	}
 	out := make([]CredDTO, len(raw.Credentials))
 	for i, c := range raw.Credentials {
-		out[i] = CredDTO{ID: c.ID, DisplayName: c.DisplayName, TypeName: c.TypeName, Scope: c.Scope, Description: c.Description}
+		scope := c.Scope
+		if scope == "" {
+			scope = "GLOBAL" // API omits scope; match TS default
+		}
+		out[i] = CredDTO{ID: c.ID, DisplayName: c.DisplayName, TypeName: c.TypeName, Scope: scope, Description: c.Description}
 	}
 	return out, nil
 }

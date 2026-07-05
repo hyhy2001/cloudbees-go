@@ -64,14 +64,13 @@ func getNodeOffline(client *api.Client, name string) (bool, error) {
 	return result.Offline, nil
 }
 
+// nodeLabels returns the first assigned label, matching the TS list output
+// (dtos/node.ts uses assignedLabels[0].name — only the first is shown).
 func nodeLabels(n nodeDTO) string {
-	parts := make([]string, 0, len(n.AssignedLabels))
-	for _, l := range n.AssignedLabels {
-		if l.Name != "" && l.Name != n.DisplayName {
-			parts = append(parts, l.Name)
-		}
+	if len(n.AssignedLabels) > 0 {
+		return n.AssignedLabels[0].Name
 	}
-	return strings.Join(parts, " ")
+	return ""
 }
 
 func xmlEscape(s string) string {
