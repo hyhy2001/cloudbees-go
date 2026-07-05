@@ -1,0 +1,25 @@
+# Runtime LM config for `bee ask` — copy to bee.lm.yml and edit.
+#
+# Unlike bee.yaml (build-time, baked into the binary), this file is read at
+# RUNTIME: change the endpoint or model here and `bee ask` picks it up on the
+# next run — no rebuild needed. Looked up as ~/.config/bee/lm.yml, then
+# ./bee.lm.yml. Priority: environment variables > this file > baked-in values.
+# Set CB_SKIP_LM_FILE=1 to ignore this file entirely.
+#
+# Flat `key: value` only (no nesting). Quotes optional.
+
+# --- via llm-gateway (recommended — OpenAI-compatible endpoint) ---
+url: "http://127.0.0.1:20128"
+apiKey: "client-key-issued-by-llm-gateway"
+model: "your-chat-model"
+
+# --- optional ---
+# rewriteModel: "your-rewrite-model"    # defaults to model
+# chatPath: "/v1/chat/completions"
+# embeddingModel: "your-embed-model"
+# embeddingUrl: "http://localhost:11435/v1/embeddings"
+# embeddingPath: "/v1/embeddings"
+
+# --- direct Databricks OAuth M2M (legacy; only if not using a gateway) ---
+# clientId: "your-databricks-oauth-client-id"
+# clientSecret: "your-databricks-oauth-client-secret"

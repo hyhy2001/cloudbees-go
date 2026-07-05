@@ -37,7 +37,7 @@ func Register(root *cobra.Command, db *sql.DB, dbPath string) {
 
 			provider := buildProvider()
 			if provider == nil {
-				return fmt.Errorf("bee ask requires an LM provider to be configured. Set LM_URL (and LM_API_KEY or client credentials) in bee.lm.json or environment variables.")
+				return fmt.Errorf("bee ask requires an LM provider to be configured. Set LM_URL (and LM_API_KEY or client credentials) in bee.lm.yml or environment variables.")
 			}
 
 			corpus := BuildCorpus(root)
