@@ -60,11 +60,6 @@ build: go-install
 	$(GO) build -ldflags="-s -w $$(cat $(GO_DIR)/bakeflags.txt)" -o $(BINARY) ./cmd/bee
 	@rm -f "$(GO_DIR)/bakeflags.txt"
 	@echo "✓ Built $(BINARY) ($$(du -sh $(BINARY) | cut -f1))"
-	@# bee-tui is the interactive TUI in its own binary (see cmd/bee-tui): the
-	@# main CLI never links bubbletea, so `bee --ui` execs this alongside it.
-	@# No LM_* bakeflags needed — the TUI doesn't use the ask/LM path.
-	$(GO) build -ldflags="-s -w" -o dist/bee-tui ./cmd/bee-tui
-	@echo "✓ Built dist/bee-tui ($$(du -sh dist/bee-tui | cut -f1))"
 
 test: go-install
 	$(GO) test ./...
