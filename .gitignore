@@ -1,5 +1,7 @@
 dist/
 .go/
+/bee
+/bee-tui
 bee.csh
 bee.lm.yml
 *.db
