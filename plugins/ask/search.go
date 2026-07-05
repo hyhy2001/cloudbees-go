@@ -113,43 +113,51 @@ func promoteID(items []DocItem, id string, afterFirst bool) []DocItem {
 	return newItems
 }
 
-// injectOrPromote brings id to front of result; if not in result, fetches from corpus.
-func injectOrPromote(result []DocItem, id string, corpus []DocItem) []DocItem {
+// injectOrPromote moves id to the front of result (or fetches it from corpus if
+// absent). When afterFirst is true it inserts at position 1 instead of 0,
+// preserving an already-promoted top hit — matching the TS splice(promoted?1:0).
+func injectOrPromote(result []DocItem, id string, corpus []DocItem, afterFirst bool) []DocItem {
+	target := 0
+	if afterFirst {
+		target = 1
+	}
 	idx := findIdx(result, func(it DocItem) bool { return it.ID == id })
 	if idx < 0 {
 		for _, c := range corpus {
 			if c.ID == id {
-				return append([]DocItem{c}, result...)
+				out := make([]DocItem, 0, len(result)+1)
+				out = append(out, result[:min(target, len(result))]...)
+				out = append(out, c)
+				out = append(out, result[min(target, len(result)):]...)
+				return out
 			}
 		}
 		return result
 	}
-	if idx == 0 {
+	if idx <= target {
 		return result
 	}
 	item := result[idx]
 	out := make([]DocItem, 0, len(result))
+	out = append(out, result[:target]...)
 	out = append(out, item)
-	out = append(out, result[:idx]...)
+	out = append(out, result[target:idx]...)
 	out = append(out, result[idx+1:]...)
 	return out
 }
 
-// injectOrPromotePrefix brings first item matching prefix to front.
-func injectOrPromotePrefix(result []DocItem, prefix string, corpus []DocItem) []DocItem {
+// injectOrPromotePrefix promotes the first item whose ID starts with prefix.
+func injectOrPromotePrefix(result []DocItem, prefix string, corpus []DocItem, afterFirst bool) []DocItem {
 	idx := findIdx(result, func(it DocItem) bool { return strings.HasPrefix(it.ID, prefix) })
 	if idx < 0 {
 		for _, c := range corpus {
 			if strings.HasPrefix(c.ID, prefix) {
-				return append([]DocItem{c}, result...)
+				return injectOrPromote(result, c.ID, corpus, afterFirst)
 			}
 		}
 		return result
 	}
-	if idx == 0 {
-		return result
-	}
-	return injectOrPromote(result, result[idx].ID, corpus)
+	return injectOrPromote(result, result[idx].ID, corpus, afterFirst)
 }
 
 var intentPatterns = []struct {
@@ -285,9 +293,9 @@ func applyPromotions(query string, items []DocItem, corpus []DocItem) []DocItem 
 			}
 			if idx > cutoff {
 				if strings.HasSuffix(target, ".") {
-					items = injectOrPromotePrefix(items, target, corpus)
+					items = injectOrPromotePrefix(items, target, corpus, promoted)
 				} else {
-					items = injectOrPromote(items, target, corpus)
+					items = injectOrPromote(items, target, corpus, promoted)
 				}
 				promoted = true
 			}
@@ -302,7 +310,7 @@ func applyPromotions(query string, items []DocItem, corpus []DocItem) []DocItem 
 		}
 		idx := findIdx(items, func(it DocItem) bool { return it.ID == "troubleshooting.node-connect" })
 		if idx > cutoff {
-			items = injectOrPromote(items, "troubleshooting.node-connect", corpus)
+			items = injectOrPromote(items, "troubleshooting.node-connect", corpus, promoted)
 			promoted = true
 		}
 	}
@@ -313,63 +321,63 @@ func applyPromotions(query string, items []DocItem, corpus []DocItem) []DocItem 
 		}
 		idx := findIdx(items, func(it DocItem) bool { return it.ID == "concept.login" })
 		if idx > cutoff {
-			items = injectOrPromote(items, "concept.login", corpus)
+			items = injectOrPromote(items, "concept.login", corpus, promoted)
 			promoted = true
 		}
 	}
 
-	// 4. Cross-plugin: "what/all/available commands"
+	// 4. Cross-plugin: "what/all/available commands" — each .list to the front.
 	if !promoted && regexp.MustCompile(`\b(what|all|available)\s+commands?\b`).MatchString(qNorm) {
 		for _, id := range []string{"job.list", "controller.list", "node.list", "cred.list"} {
-			items = injectOrPromote(items, id, corpus)
+			items = injectOrPromote(items, id, corpus, false)
 		}
 		promoted = true
 	}
 
 	// Final overrides
 	if regexp.MustCompile(`(?i)\bcred\s+list\b`).MatchString(qNorm) {
-		items = injectOrPromote(items, "cred.list", corpus)
+		items = injectOrPromote(items, "cred.list", corpus, false)
 	}
 	if !regexp.MustCompile(`(?i)\bagents?\b`).MatchString(qNorm) &&
 		(regexp.MustCompile(`(?i)\bjob\s+list\b`).MatchString(qNorm) ||
 			regexp.MustCompile(`(?i)\b(show|list|get)\s+all\s+jobs\b`).MatchString(qNorm) ||
 			regexp.MustCompile(`(?i)\ball\s+jobs\b`).MatchString(qNorm)) {
-		items = injectOrPromote(items, "job.list", corpus)
+		items = injectOrPromote(items, "job.list", corpus, false)
 	}
 	if regexp.MustCompile(`(?i)\bnode\s+(update|create)\b`).MatchString(qNorm) || regexp.MustCompile(`(?i)\b(update|create)\s+node\b`).MatchString(qNorm) {
 		target := "node.create"
 		if regexp.MustCompile(`(?i)\bupdate\b`).MatchString(qNorm) {
 			target = "node.update"
 		}
-		items = injectOrPromote(items, target, corpus)
+		items = injectOrPromote(items, target, corpus, false)
 	}
 	if regexp.MustCompile(`(?i)\bauth\s+login\b`).MatchString(qNorm) {
-		items = injectOrPromote(items, "auth.login", corpus)
+		items = injectOrPromote(items, "auth.login", corpus, false)
 	}
 	if regexp.MustCompile(`(?i)\bhow\s+(do\s+i|to|can\s+i)\s+(create|make)\s+(a\s+)?pipeline\b`).MatchString(qNorm) {
-		items = injectOrPromote(items, "concept.create-pipeline", corpus)
+		items = injectOrPromote(items, "concept.create-pipeline", corpus, false)
 	}
 	if regexp.MustCompile(`(?i)\brun\s+(job\s+)?.*\bparam.*\bvalue`).MatchString(qNorm) || regexp.MustCompile(`(?i)\brun\s+job\s+.*\bparam`).MatchString(qNorm) {
-		items = injectOrPromote(items, "job.run", corpus)
+		items = injectOrPromote(items, "job.run", corpus, false)
 	}
 	if regexp.MustCompile(`(?i)\bstore\b.*\bvs\b`).MatchString(qNorm) || regexp.MustCompile(`(?i)\bvs\b.*\bstore\b`).MatchString(qNorm) {
-		items = injectOrPromote(items, "concept.credential-store", corpus)
+		items = injectOrPromote(items, "concept.credential-store", corpus, false)
 	}
 	if regexp.MustCompile(`(?i)\bpipeline\b.*\b(validat|failed|error|invalid)\b`).MatchString(qNorm) {
-		items = injectOrPromote(items, "troubleshooting.pipeline-validate", corpus)
+		items = injectOrPromote(items, "troubleshooting.pipeline-validate", corpus, false)
 	}
 	if regexp.MustCompile(`(?i)\bbuild\s+failed\b`).MatchString(qNorm) {
-		items = injectOrPromote(items, "job.log", corpus)
+		items = injectOrPromote(items, "job.log", corpus, false)
 	}
 	if regexp.MustCompile(`(?i)\b(check|is)\s+(if\s+)?(my\s+)?(build|job)\s+(is\s+)?(done|finished|complete)\b`).MatchString(qNorm) ||
 		regexp.MustCompile(`(?i)\bbuild\s+(done|finished|complete)\b`).MatchString(qNorm) {
-		items = injectOrPromote(items, "job.status", corpus)
+		items = injectOrPromote(items, "job.status", corpus, false)
 	}
 	if regexp.MustCompile(`(?i)\bchange\s+(the\s+)?(server|controller)\b`).MatchString(qNorm) || regexp.MustCompile(`(?i)\bhow\s+(do\s+i|to)\s+change\s+(server|controller)\b`).MatchString(qNorm) {
-		items = injectOrPromote(items, "controller.select", corpus)
+		items = injectOrPromote(items, "controller.select", corpus, false)
 	}
 	if regexp.MustCompile(`(?i)\bwhich\s+(server|controller)\b`).MatchString(qNorm) || regexp.MustCompile(`(?i)\bam\s+i\s+(connected|on)\b`).MatchString(qNorm) {
-		items = injectOrPromote(items, "controller.current", corpus)
+		items = injectOrPromote(items, "controller.current", corpus, false)
 	}
 
 	_ = promoted
@@ -382,34 +390,34 @@ func applyPostGateInjects(query string, result []DocItem, corpus []DocItem, limi
 
 	if (regexp.MustCompile(`(?i)\b(jenkins|cloudbees)\b`).MatchString(qNorm) &&
 		regexp.MustCompile(`(?i)\b(switch|change|select|pick|choose)\b`).MatchString(qNorm)) {
-		result = injectOrPromote(result, "controller.select", corpus)
+		result = injectOrPromote(result, "controller.select", corpus, false)
 	}
 	if regexp.MustCompile(`(?i)\btypes?\s+of\s+credentials?\b`).MatchString(qNorm) || regexp.MustCompile(`(?i)\bwhat\s+credentials?\s+(can\s+i\s+)?(store|use)\b`).MatchString(qNorm) {
-		result = injectOrPromote(result, "concept.credential-types", corpus)
+		result = injectOrPromote(result, "concept.credential-types", corpus, false)
 	}
 	if regexp.MustCompile(`(?i)\bjobs?\s+i\s+care\s+about\b`).MatchString(qNorm) || regexp.MustCompile(`(?i)\bonly\s+(show|see|my)\s+jobs?\b`).MatchString(qNorm) {
-		result = injectOrPromote(result, "concept.mine-vs-all", corpus)
+		result = injectOrPromote(result, "concept.mine-vs-all", corpus, false)
 	}
 	if regexp.MustCompile(`(?i)\bchange\s+(the\s+)?(server|controller)\b`).MatchString(qNorm) {
-		result = injectOrPromote(result, "controller.select", corpus)
+		result = injectOrPromote(result, "controller.select", corpus, false)
 	}
 	if regexp.MustCompile(`(?i)\bbuild\s+failed\b`).MatchString(qNorm) && regexp.MustCompile(`(?i)\b(see|view|get|show)\b`).MatchString(qNorm) {
-		result = injectOrPromote(result, "job.log", corpus)
+		result = injectOrPromote(result, "job.log", corpus, false)
 	}
 	if regexp.MustCompile(`(?i)\bhow\s+(to|do\s+i)\s+(add|create)\s+(a\s+)?(build\s+)?machine\b`).MatchString(qNorm) {
-		result = injectOrPromote(result, "concept.add-node", corpus)
+		result = injectOrPromote(result, "concept.add-node", corpus, false)
 	}
 	if regexp.MustCompile(`(?i)\bcredentials?\s+(does\s+bee|supported|available|types?)\b`).MatchString(qNorm) || regexp.MustCompile(`(?i)\bwhat\s+credentials?\s+(does|can|bee)\b`).MatchString(qNorm) {
-		result = injectOrPromote(result, "concept.credential-types", corpus)
+		result = injectOrPromote(result, "concept.credential-types", corpus, false)
 	}
 	if regexp.MustCompile(`(?i)\bhow\s+(to|do\s+i)\s+run\s+(a\s+)?job\s+with\s+param`).MatchString(qNorm) {
-		result = injectOrPromote(result, "concept.build-params", corpus)
+		result = injectOrPromote(result, "concept.build-params", corpus, false)
 	}
 	if regexp.MustCompile(`(?i)^(make|create|new)\s+job$`).MatchString(qNorm) {
-		result = injectOrPromote(result, "job.create", corpus)
+		result = injectOrPromote(result, "job.create", corpus, false)
 	}
 	if regexp.MustCompile(`(?i)\b(unreachable|cannot\s+connect|can'?t\s+connect)\b`).MatchString(qNorm) && regexp.MustCompile(`(?i)\bnode\b`).MatchString(qNorm) {
-		result = injectOrPromote(result, "troubleshooting.node-connect", corpus)
+		result = injectOrPromote(result, "troubleshooting.node-connect", corpus, false)
 	}
 
 	return result
