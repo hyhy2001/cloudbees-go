@@ -6,7 +6,7 @@
 //     a flat `key: value` file with friendly keys (url, apiKey, model, ...).
 //     Lets the endpoint change without a rebuild. Skip with CB_SKIP_LM_FILE=1.
 //  3. Build-time    — baked via -ldflags "-X config.BakedLMURL=<xor-encoded>",
-//     values sourced from bee.yaml at build time (see Makefile).
+//     values sourced from bee.lm.yml at build time (see Makefile).
 //     Values are XOR-obfuscated so they don't appear in `strings ./bee`.
 //
 // LMURL/APIKey normally point at an llm-gateway instance (OpenAI-compatible),

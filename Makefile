@@ -13,23 +13,25 @@ GO_VERSION     := 1.22.2
 GO_TARBALL     := go$(GO_VERSION).linux-amd64.tar.gz
 GO_DOWNLOAD_URL := https://go.dev/dl/$(GO_TARBALL)
 
-# Build-time llm-gateway config — read from bee.yaml if present.
-# bee.yaml is a flat `key: "value"` file (see bee.yaml.example) — not general YAML.
+# Build-time llm-gateway config — read from bee.lm.yml if present.
+# bee.lm.yml is a flat `key: "value"` file (see bee.lm.yml.example) — not general
+# YAML. The same file is also read at RUNTIME by internal/config, so one file
+# drives both baked-in defaults and live overrides.
 # LM_URL/LM_API_KEY point at an llm-gateway instance, not a provider
 # directly — the real provider credential lives only on the gateway.
-BEE_YAML := bee.yaml
+BEE_YAML := bee.lm.yml
 yq = $(shell test -f $(BEE_YAML) && sed -n 's/^$(1): *"\(.*\)"$$/\1/p; s/^$(1): *\([^"]*\)$$/\1/p' $(BEE_YAML) | head -1)
 
-LM_URL           ?= $(call yq,proxy_url)
-LM_API_KEY       ?= $(call yq,proxy_client_key)
+LM_URL           ?= $(call yq,url)
+LM_API_KEY       ?= $(call yq,apiKey)
 LM_MODEL         ?= $(call yq,model)
-LM_REWRITE       ?= $(call yq,rewrite_model)
-LM_CLIENT_ID     ?= $(call yq,client_id)
-LM_CLIENT_SECRET ?= $(call yq,client_secret)
-LM_CHAT_PATH     ?= $(call yq,chat_path)
-LM_EMBED_MODEL   ?= $(call yq,embed_model)
-LM_EMBED_URL     ?= $(call yq,embed_url)
-LM_EMBED_PATH    ?= $(call yq,embed_path)
+LM_REWRITE       ?= $(call yq,rewriteModel)
+LM_CLIENT_ID     ?= $(call yq,clientId)
+LM_CLIENT_SECRET ?= $(call yq,clientSecret)
+LM_CHAT_PATH     ?= $(call yq,chatPath)
+LM_EMBED_MODEL   ?= $(call yq,embeddingModel)
+LM_EMBED_URL     ?= $(call yq,embeddingUrl)
+LM_EMBED_PATH    ?= $(call yq,embeddingPath)
 
 .PHONY: build test install clean go-install gen-embeddings
 
@@ -67,7 +69,7 @@ test: go-install
 # Optional: bake neural embeddings for `bee ask` vector search into
 # plugins/ask/embeddings_gen.go. Not part of `build` — bee ask works
 # BM25-only without this (see plugins/ask/embeddings_gen.go placeholder).
-# Requires embed_url/embed_model in bee.yaml (or LM_EMBED_* env).
+# Requires embeddingUrl/embeddingModel in bee.lm.yml (or LM_EMBED_* env).
 gen-embeddings: go-install
 	LM_URL='$(LM_URL)' LM_API_KEY='$(LM_API_KEY)' LM_CLIENT_ID='$(LM_CLIENT_ID)' LM_CLIENT_SECRET='$(LM_CLIENT_SECRET)' \
 		LM_EMBED_MODEL='$(LM_EMBED_MODEL)' LM_EMBED_URL='$(LM_EMBED_URL)' LM_EMBED_PATH='$(LM_EMBED_PATH)' \

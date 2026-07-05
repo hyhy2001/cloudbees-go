@@ -1,7 +1,6 @@
 dist/
 .go/
 bee.csh
-bee.yaml
 bee.lm.yml
 *.db
 .bee_secret

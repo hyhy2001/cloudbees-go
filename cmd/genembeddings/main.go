@@ -122,7 +122,7 @@ func main() {
 		apiURL = strings.TrimRight(baseURL, "/") + embedPath
 	}
 	if apiURL == "" {
-		fail("no embedding API configured — set LM_EMBED_URL or LM_URL in bee.yaml/env")
+		fail("no embedding API configured — set LM_EMBED_URL or LM_URL in bee.lm.yml/env")
 	}
 
 	bearer := apiKey
