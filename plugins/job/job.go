@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -360,7 +361,11 @@ func jobGetCmd(database *sql.DB, dbPath string) *cobra.Command {
 				return err
 			}
 			if j == nil {
-				return fmt.Errorf("job '%s' not found", args[0])
+				// TS prints this via a raw console.error (no "ERROR:" colon) then
+				// exits 1; mirror that exactly rather than routing through the
+				// standard error handler.
+				fmt.Fprintf(os.Stderr, "ERROR Job '%s' not found.\n", args[0])
+				os.Exit(1)
 			}
 			lastBuild := "-"
 			if j.LastBuild != nil {
