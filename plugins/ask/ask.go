@@ -21,7 +21,7 @@ func Register(root *cobra.Command, db *sql.DB, dbPath string) {
 	cmd := &cobra.Command{
 		Use:   "ask <query...>",
 		Short: "AI-powered contextual help for bee commands",
-		Long:  "Ask how to use bee. Requires LM endpoint via CB_DATABRICK_URL (+ CB_API_KEY or OAuth creds) or bee.yaml at build time.",
+		Long:  "Ask how to use bee — requires LM endpoint configured in bee.lm.json or env",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			query := strings.TrimSpace(strings.Join(args, " "))
@@ -32,12 +32,12 @@ func Register(root *cobra.Command, db *sql.DB, dbPath string) {
 				return ' '
 			}, strings.ToLower(query)))
 			if query == "" || onlyAlnum == "" {
-				return fmt.Errorf("empty query — try: bee ask create job")
+				return fmt.Errorf("Empty query. Try: bee ask create job")
 			}
 
 			provider := buildProvider()
 			if provider == nil {
-				return fmt.Errorf("bee ask requires an LM provider. Set CB_DATABRICK_URL (and CB_API_KEY or OAuth credentials) or create bee.yaml and rebuild")
+				return fmt.Errorf("bee ask requires an LM provider to be configured. Set LM_URL (and LM_API_KEY or client credentials) in bee.lm.json or environment variables.")
 			}
 
 			corpus := BuildCorpus(root)
@@ -75,7 +75,7 @@ func Register(root *cobra.Command, db *sql.DB, dbPath string) {
 				return nil
 			}
 
-			renderHits(result.Hits)
+			renderHits(query, result.Hits)
 			return nil
 		},
 	}
@@ -132,6 +132,19 @@ func startSpinner(text string) func() {
 }
 
 func printJSON(query string, result *AnswerResult) error {
+	enc, err := askJSONBytes(query, result)
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(enc))
+	return nil
+}
+
+// askJSONBytes builds the --json payload. Struct field order fixes the JSON key
+// order to match the TS CLI (query, source, provider, answer, structured, hits);
+// hits is a non-nil slice so an empty result serializes as [] not null, and
+// provider is a pointer so it serializes as null when unset (TS `?? null`).
+func askJSONBytes(query string, result *AnswerResult) ([]byte, error) {
 	type hitOut struct {
 		ID          string `json:"id"`
 		Type        string `json:"type"`
@@ -139,22 +152,21 @@ func printJSON(query string, result *AnswerResult) error {
 		Description string `json:"description"`
 		Source      string `json:"source"`
 	}
-	var hits []hitOut
+	hits := []hitOut{}
 	for _, h := range result.Hits {
 		hits = append(hits, hitOut{h.ID, h.Type, h.Title, h.Description, h.Source})
 	}
-	out := map[string]interface{}{
-		"query":      query,
-		"source":     result.Source,
-		"provider":   result.Provider,
-		"answer":     result.Text,
-		"structured": result.Structured,
-		"hits":       hits,
+	var provider *string
+	if result.Provider != "" {
+		provider = &result.Provider
 	}
-	enc, err := json.MarshalIndent(out, "", "  ")
-	if err != nil {
-		return err
-	}
-	fmt.Println(string(enc))
-	return nil
+	out := struct {
+		Query      string    `json:"query"`
+		Source     string    `json:"source"`
+		Provider   *string   `json:"provider"`
+		Answer     string    `json:"answer"`
+		Structured *LMAnswer `json:"structured"`
+		Hits       []hitOut  `json:"hits"`
+	}{query, result.Source, provider, result.Text, result.Structured, hits}
+	return json.MarshalIndent(out, "", "  ")
 }

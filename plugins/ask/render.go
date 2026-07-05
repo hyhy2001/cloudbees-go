@@ -3,8 +3,9 @@ package ask
 import (
 	"fmt"
 	"os"
-	"strings"
 	"text/tabwriter"
+
+	"golang.org/x/term"
 )
 
 // renderStructuredAnswer prints the LM answer in a human-friendly table format.
@@ -38,27 +39,33 @@ func renderStructuredAnswer(ans *LMAnswer) {
 	}
 }
 
-// renderFooter prints token usage when --debug is set or when tokens were used.
+// dim wraps s in the dim ANSI code on a TTY, plain when piped — matching the
+// TS CLI's chalk.dim auto-detection so captured output compares byte-for-byte.
+func dim(s string) string {
+	if term.IsTerminal(int(os.Stdout.Fd())) {
+		return "\033[2m" + s + "\033[22m"
+	}
+	return s
+}
+
+// renderFooter prints the "AI-generated" disclaimer plus token usage, matching
+// the TS renderFooter: always to stdout, disclaimer always, token counts when
+// usage is present, rewrite counts only with --debug.
 func renderFooter(usage, rewriteUsage TokenUsage, debug bool) {
-	if !debug && usage.PromptTokens == 0 && usage.CompletionTokens == 0 {
-		return
-	}
-	parts := []string{}
+	tokenInfo := ""
 	if usage.PromptTokens > 0 || usage.CompletionTokens > 0 {
-		parts = append(parts, fmt.Sprintf("tokens: %d prompt / %d completion", usage.PromptTokens, usage.CompletionTokens))
+		tokenInfo = dim(fmt.Sprintf(" (↑%d ↓%d tokens)", usage.PromptTokens, usage.CompletionTokens))
 	}
-	if rewriteUsage.PromptTokens > 0 || rewriteUsage.CompletionTokens > 0 {
-		parts = append(parts, fmt.Sprintf("rewrite: %d prompt / %d completion", rewriteUsage.PromptTokens, rewriteUsage.CompletionTokens))
+	if debug && (rewriteUsage.PromptTokens > 0 || rewriteUsage.CompletionTokens > 0) {
+		tokenInfo += dim(fmt.Sprintf(" rewrite:(↑%d ↓%d)", rewriteUsage.PromptTokens, rewriteUsage.CompletionTokens))
 	}
-	if len(parts) > 0 {
-		fmt.Fprintf(os.Stderr, "\033[2m[%s]\033[0m\n", strings.Join(parts, " | "))
-	}
+	fmt.Println(dim("\nAI-generated — verify before use.") + tokenInfo)
 }
 
 // renderHits prints the offline BM25 hits when no LM is configured.
-func renderHits(hits []DocItem) {
+func renderHits(query string, hits []DocItem) {
 	if len(hits) == 0 {
-		fmt.Println("No matching commands found. Try: bee --help")
+		fmt.Printf("No results for '%s'.\nTry: bee --help  or  bee ask <shorter keyword>\n", query)
 		return
 	}
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
