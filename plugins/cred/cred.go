@@ -197,7 +197,7 @@ func setXMLElement(xmlStr, tag, value string) string {
 func Register(root *cobra.Command, database *sql.DB, dbPath string) {
 	grp := &cobra.Command{
 		Use:   "cred",
-		Short: "Manage CloudBees credentials (secrets, tokens, passwords, API keys, SSH keys)",
+		Short: "Manage CloudBees credentials (secrets, tokens, passwords, API keys)",
 	}
 	grp.AddCommand(
 		credListCmd(database, dbPath),
@@ -335,7 +335,7 @@ func credCreateCmd(database *sql.DB, dbPath string) *cobra.Command {
 	var flagID, flagUsername, flagPassword, flagSecretText, flagDesc, flagScope, flagStore string
 	cmd := &cobra.Command{
 		Use:   "create",
-		Short: "Create a new credential (Username+Password, SecretText, or SSH key)",
+		Short: "Create a new credential (Username+Password or SecretText)",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := validateStore(flagStore); err != nil {
 				return err
