@@ -46,10 +46,12 @@ func Register(root *cobra.Command, db *sql.DB, dbPath string) {
 
 			limit := flagLimit
 			if limit <= 0 {
-				limit = 8
+				limit = 5 // matches the TS parse fallback
 			}
 
-			result, err := Answer(query, corpus, provider, limit)
+			// JSON output drains any stream first, so disable streaming for it.
+			wantStream := !flagNoStream && !flagJSON
+			result, err := Answer(query, corpus, provider, limit, wantStream)
 			stop()
 			if err != nil {
 				return err
@@ -57,6 +59,21 @@ func Register(root *cobra.Command, db *sql.DB, dbPath string) {
 
 			if result.Source == "raw" && len(result.Hits) == 0 {
 				fmt.Println("I only help with bee usage.")
+				return nil
+			}
+
+			// Streaming answer: drive it, printing chunks as they arrive. It may
+			// turn out to be JSON, in which case Structured gets populated.
+			if result.Stream && result.StreamOutput != nil && !flagJSON {
+				text := result.StreamOutput(func(chunk string) { fmt.Print(chunk) })
+				if result.Structured != nil {
+					renderStructuredAnswer(result.Structured)
+					renderFooter(result.Usage, result.RewriteUsage, flagDebug)
+					return nil
+				}
+				if text != "" {
+					fmt.Println()
+				}
 				return nil
 			}
 

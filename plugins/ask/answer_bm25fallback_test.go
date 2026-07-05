@@ -25,7 +25,7 @@ func TestAnswerFallsBackToBM25WhenNoEmbeddingConfigured(t *testing.T) {
 	t.Setenv("CB_DATABRICK_URL", "")
 
 	corpus := BuildCorpus(nil)
-	result, err := Answer("how do I run a job", corpus, fakeProvider{}, 5)
+	result, err := Answer("how do I run a job", corpus, fakeProvider{}, 5, false)
 	if err != nil {
 		t.Fatalf("Answer returned error in BM25-only mode: %v", err)
 	}
