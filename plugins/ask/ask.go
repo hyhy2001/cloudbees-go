@@ -131,21 +131,28 @@ func startSpinner(text string) func() {
 	}
 	frames := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 	stop := make(chan struct{})
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		i := 0
+		fmt.Fprintf(os.Stderr, "\r\033[36m%s\033[0m \033[2m%s\033[0m", frames[0], text)
 		for {
 			select {
 			case <-stop:
-				fmt.Fprintf(os.Stderr, "\r\033[2K")
+				fmt.Fprintf(os.Stderr, "\r\033[2K") // clear the spinner line
 				return
-			default:
-				fmt.Fprintf(os.Stderr, "\r\033[36m%s\033[0m \033[2m%s\033[0m", frames[i%len(frames)], text)
+			case <-time.After(80 * time.Millisecond):
 				i++
-				time.Sleep(80 * time.Millisecond)
+				fmt.Fprintf(os.Stderr, "\r\033[36m%s\033[0m \033[2m%s\033[0m", frames[i%len(frames)], text)
 			}
 		}
 	}()
-	return func() { close(stop); time.Sleep(10 * time.Millisecond) }
+	// The returned stop func blocks until the goroutine has cleared the line, so
+	// the caller's next stdout write can't interleave with a leftover spinner.
+	return func() {
+		close(stop)
+		<-done
+	}
 }
 
 func printJSON(query string, result *AnswerResult) error {
