@@ -63,7 +63,7 @@ func warnUserStore(store, username string) {
 // validateStore enforces the only two credential stores Jenkins exposes here.
 func validateStore(store string) error {
 	if store != "system" && store != "user" {
-		return fmt.Errorf("invalid store '%s'. Choose from: system, user", store)
+		return fmt.Errorf("Invalid store '%s'. Choose from: system, user", store)
 	}
 	return nil
 }
@@ -71,7 +71,7 @@ func validateStore(store string) error {
 // validateScope enforces the only two credential scopes Jenkins exposes here.
 func validateScope(scope string) error {
 	if scope != "GLOBAL" && scope != "SYSTEM" {
-		return fmt.Errorf("invalid scope '%s'. Choose from: GLOBAL, SYSTEM", scope)
+		return fmt.Errorf("Invalid scope '%s'. Choose from: GLOBAL, SYSTEM", scope)
 	}
 	return nil
 }
@@ -84,7 +84,7 @@ func listCredentials(database *sql.DB, client *api.Client, store, username strin
 	}
 	if err := client.GetJSONCached(context.Background(), database, seg+"/api/json?tree=credentials[id,typeName,description,scope,displayName]", "credentials.list."+store, &result); err != nil {
 		// 404 means plugin not installed — treat as empty
-		if strings.Contains(err.Error(), "404") {
+		if strings.Contains(err.Error(), "Resource not found") {
 			return nil, nil
 		}
 		return nil, err
@@ -352,7 +352,7 @@ func credCreateCmd(database *sql.DB, dbPath string) *cobra.Command {
 			warnUserStore(flagStore, username)
 
 			if flagSecretText != "" && flagUsername != "" {
-				return fmt.Errorf("--secret-text and --username are mutually exclusive")
+				return fmt.Errorf("--secret-text and --username are mutually exclusive.")
 			}
 
 			credID := flagID
@@ -375,7 +375,7 @@ func credCreateCmd(database *sql.DB, dbPath string) *cobra.Command {
 				xmlBody = buildSecretTextXML(credID, flagSecretText, flagDesc, flagScope)
 			} else {
 				if flagUsername == "" {
-					return fmt.Errorf("--username is required for Username+Password credentials (or use --secret-text)")
+					return fmt.Errorf("--username is required for Username+Password credentials (or use --secret-text for SecretText).")
 				}
 				password := flagPassword
 				if password == "" {
@@ -485,7 +485,7 @@ func credUpdateCmd(database *sql.DB, dbPath string) *cobra.Command {
 			warnUserStore(flagStore, username)
 
 			if cmd.Flags().Changed("password") && cmd.Flags().Changed("secret-text") {
-				return fmt.Errorf("--password and --secret-text are mutually exclusive")
+				return fmt.Errorf("--password and --secret-text are mutually exclusive.")
 			}
 
 			client, err := controller.GetActiveControllerClient(database, dbPath)
@@ -555,7 +555,7 @@ func credTrackCmd(database *sql.DB, dbPath string) *cobra.Command {
 
 			for _, credID := range args {
 				if _, err := getCredential(client, credID, username, flagStore); err != nil {
-					if strings.Contains(err.Error(), "404") {
+					if strings.Contains(err.Error(), "Resource not found") {
 						cli.Error(fmt.Sprintf("Credential '%s' not found in %s store. Skipping.", credID, flagStore))
 					} else {
 						cli.Error(fmt.Sprintf("Could not verify credential '%s': %s", credID, err))

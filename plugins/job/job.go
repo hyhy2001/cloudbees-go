@@ -441,8 +441,20 @@ func jobCreateCmd(database *sql.DB, dbPath string) *cobra.Command {
 			}
 			_ = cache.InvalidateResource(database, "job")
 			profile := getProfileName(database)
-			_ = db.TrackResource(database, "job", name, profile, client.BaseURL)
-			cli.Success(fmt.Sprintf("Created freestyle job '%s'", name))
+			qualified := name
+			if fsFolder != "" {
+				qualified = fsFolder + "/" + name
+			}
+			_ = db.TrackResource(database, "job", qualified, profile, client.BaseURL)
+			nodeMsg := ""
+			if fsNode != "" {
+				nodeMsg = fmt.Sprintf(" on node '%s'", fsNode)
+			}
+			cli.Success(fmt.Sprintf("Freestyle job '%s' created.%s", qualified, nodeMsg))
+			if fsNode == "" {
+				cli.Warn("No node assigned — job will run on any available agent.")
+			}
+			fmt.Printf("  Link: %s/job/%s/\n", strings.TrimRight(client.BaseURL, "/"), strings.ReplaceAll(qualified, "/", "/job/"))
 			return nil
 		},
 	}
@@ -488,8 +500,17 @@ func jobCreateCmd(database *sql.DB, dbPath string) *cobra.Command {
 			}
 			_ = cache.InvalidateResource(database, "job")
 			profile := getProfileName(database)
-			_ = db.TrackResource(database, "job", name, profile, client.BaseURL)
-			cli.Success(fmt.Sprintf("Created pipeline job '%s'", name))
+			qualified := name
+			if plFolder != "" {
+				qualified = plFolder + "/" + name
+			}
+			_ = db.TrackResource(database, "job", qualified, profile, client.BaseURL)
+			nodeMsg := ""
+			if plNode != "" {
+				nodeMsg = fmt.Sprintf(" on node '%s'", plNode)
+			}
+			cli.Success(fmt.Sprintf("Pipeline job '%s' created.%s", qualified, nodeMsg))
+			fmt.Printf("  Link: %s/job/%s/\n", strings.TrimRight(client.BaseURL, "/"), strings.ReplaceAll(qualified, "/", "/job/"))
 			return nil
 		},
 	}
@@ -517,7 +538,14 @@ func jobCreateCmd(database *sql.DB, dbPath string) *cobra.Command {
 				return err
 			}
 			_ = cache.InvalidateResource(database, "job")
-			cli.Success(fmt.Sprintf("Created folder '%s'", name))
+			profile := getProfileName(database)
+			qualified := name
+			if fdFolder != "" {
+				qualified = fdFolder + "/" + name
+			}
+			_ = db.TrackResource(database, "job", qualified, profile, client.BaseURL)
+			cli.Success(fmt.Sprintf("Folder '%s' created.", qualified))
+			fmt.Printf("  Link: %s/job/%s/\n", strings.TrimRight(client.BaseURL, "/"), strings.ReplaceAll(qualified, "/", "/job/"))
 			return nil
 		},
 	}
@@ -551,12 +579,14 @@ func jobDeleteCmd(database *sql.DB, dbPath string) *cobra.Command {
 			}
 			for _, name := range args {
 				if err := client.PostForm(cmd.Context(), "/job/"+JobPathSegments(name)+"/doDelete", nil); err != nil {
-					cli.Error(fmt.Sprintf("Delete '%s': %v", name, err))
-					continue
+					cli.Warn(fmt.Sprintf("Could not delete job '%s' on server: %s", name, err))
+					cli.Info("Proceeding with local removal anyway.")
+				} else {
+					cli.Success(fmt.Sprintf("Job '%s' deleted from server.", name))
 				}
 				profile := getProfileName(database)
 				_ = db.UntrackResource(database, "job", name, profile, client.BaseURL)
-				cli.Success(fmt.Sprintf("Deleted '%s'", name))
+				cli.Success(fmt.Sprintf("Job '%s' removed from local database.", name))
 			}
 			_ = cache.InvalidateResource(database, "job")
 			return nil
@@ -584,7 +614,8 @@ func jobCopyCmd(database *sql.DB, dbPath string) *cobra.Command {
 			_ = cache.InvalidateResource(database, "job")
 			profile := getProfileName(database)
 			_ = db.TrackResource(database, "job", dst, profile, client.BaseURL)
-			cli.Success(fmt.Sprintf("Cloned '%s' → '%s'", src, dst))
+			cli.Success(fmt.Sprintf("Job '%s' cloned to '%s'.", src, dst))
+			fmt.Printf("  Link: %s/job/%s/\n", strings.TrimRight(client.BaseURL, "/"), strings.ReplaceAll(dst, "/", "/job/"))
 			return nil
 		},
 	}
@@ -607,7 +638,19 @@ func jobMoveCmd(database *sql.DB, dbPath string) *cobra.Command {
 				return err
 			}
 			_ = cache.InvalidateResource(database, "job")
-			cli.Success(fmt.Sprintf("Moved '%s' to '%s'", src, dst))
+			base := src
+			if idx := strings.LastIndex(src, "/"); idx >= 0 {
+				base = src[idx+1:]
+			}
+			destLabel := dst
+			qualified := dst + "/" + base
+			if dst == "." || dst == "" {
+				destLabel = "/"
+				qualified = base
+			}
+			profile := getProfileName(database)
+			_ = db.TrackResource(database, "job", qualified, profile, client.BaseURL)
+			cli.Success(fmt.Sprintf("Job '%s' moved to '%s' as '%s'.", src, destLabel, qualified))
 			return nil
 		},
 	}
@@ -624,9 +667,27 @@ func jobTrackCmd(database *sql.DB, dbPath string) *cobra.Command {
 				return err
 			}
 			profile := getProfileName(database)
+			jobs, _ := ListJobs(cmd.Context(), database, client)
+			serverNames := map[string]bool{}
+			for _, j := range jobs {
+				serverNames[j.Name] = true
+			}
+			trackedNow, _ := db.ListTracked(database, "job", profile, client.BaseURL)
+			trackedSet := map[string]bool{}
+			for _, n := range trackedNow {
+				trackedSet[n] = true
+			}
 			for _, name := range args {
+				if !serverNames[name] {
+					cli.Error(fmt.Sprintf("Job '%s' not found on server. Skipping.", name))
+					continue
+				}
+				if trackedSet[name] {
+					cli.Info(fmt.Sprintf("Job '%s' is already tracked.", name))
+					continue
+				}
 				_ = db.TrackResource(database, "job", name, profile, client.BaseURL)
-				cli.Success(fmt.Sprintf("Tracking '%s'", name))
+				cli.Success(fmt.Sprintf("Tracked job '%s'.", name))
 			}
 			return nil
 		},
@@ -644,9 +705,18 @@ func jobUntrackCmd(database *sql.DB, dbPath string) *cobra.Command {
 				return err
 			}
 			profile := getProfileName(database)
+			trackedNow, _ := db.ListTracked(database, "job", profile, client.BaseURL)
+			trackedSet := map[string]bool{}
+			for _, n := range trackedNow {
+				trackedSet[n] = true
+			}
 			for _, name := range args {
+				if !trackedSet[name] {
+					cli.Info(fmt.Sprintf("Job '%s' is not in Mine.", name))
+					continue
+				}
 				_ = db.UntrackResource(database, "job", name, profile, client.BaseURL)
-				cli.Success(fmt.Sprintf("Untracked '%s'", name))
+				cli.Success(fmt.Sprintf("Removed job '%s' from Mine.", name))
 			}
 			return nil
 		},
@@ -706,7 +776,7 @@ func jobRunCmd(database *sql.DB, dbPath string) *cobra.Command {
 					return err
 				}
 			}
-			cli.Success(fmt.Sprintf("Triggered build for '%s'", name))
+			cli.Success(fmt.Sprintf("Triggered: %s", name))
 
 			buildNum := baseline
 			deadline := time.Now().Add(15 * time.Second)
@@ -769,7 +839,7 @@ func jobStopCmd(database *sql.DB, dbPath string) *cobra.Command {
 			if err := client.PostForm(cmd.Context(), path, nil); err != nil {
 				return err
 			}
-			cli.Success(fmt.Sprintf("Stopped build #%d of '%s'", buildNum, name))
+			cli.Success(fmt.Sprintf("Stop requested: %s #%d", name, buildNum))
 			return nil
 		},
 	}
@@ -843,7 +913,7 @@ func jobStatusCmd(database *sql.DB, dbPath string) *cobra.Command {
 				return err
 			}
 			if len(builds) == 0 {
-				cli.Info("INFO No builds found.")
+				cli.Info("No builds found.")
 				return nil
 			}
 			rows := make([][]string, len(builds))
@@ -941,7 +1011,7 @@ func jobUpdateCmd(database *sql.DB, dbPath string) *cobra.Command {
 				return err
 			}
 			_ = cache.InvalidateResource(database, "job")
-			cli.Success(fmt.Sprintf("Updated freestyle job '%s'", name))
+			cli.Success(fmt.Sprintf("Freestyle job '%s' updated.", name))
 			return nil
 		},
 	}
@@ -1019,7 +1089,7 @@ func jobUpdateCmd(database *sql.DB, dbPath string) *cobra.Command {
 				return err
 			}
 			_ = cache.InvalidateResource(database, "job")
-			cli.Success(fmt.Sprintf("Updated pipeline job '%s'", name))
+			cli.Success(fmt.Sprintf("Pipeline job '%s' updated.", name))
 			return nil
 		},
 	}
@@ -1070,11 +1140,11 @@ func jobApproveAgentCmd(database *sql.DB, dbPath string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			cli.Info(fmt.Sprintf("Running Folders Plus handshake: agent '%s' ↔ folder '%s'...", agent, folder))
+			fmt.Printf("  Running handshake: folder='%s' agent='%s'…\n", folder, agent)
 			if err := node.ApproveFolder(cmd.Context(), client, agent, folder); err != nil {
 				return err
 			}
-			cli.Success(fmt.Sprintf("Agent '%s' approved for folder '%s'", agent, folder))
+			cli.Success(fmt.Sprintf("Agent '%s' approved for folder '%s'.", agent, folder))
 			return nil
 		},
 	}
@@ -1107,7 +1177,7 @@ func jobRemoveAgentCmd(database *sql.DB, dbPath string) *cobra.Command {
 					if err := node.RemoveControlledAgentGrant(cmd.Context(), client, folder, g.GrantID); err != nil {
 						return err
 					}
-					cli.Success(fmt.Sprintf("Removed agent '%s' from folder '%s'", agent, folder))
+					cli.Success(fmt.Sprintf("Agent '%s' removed from '%s'.", agent, folder))
 					return nil
 				}
 			}

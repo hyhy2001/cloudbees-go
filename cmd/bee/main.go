@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"bee/internal/cli"
 	"bee/internal/db"
 	"bee/plugins/ask"
 	"bee/plugins/auth"
@@ -129,9 +130,9 @@ func main() {
 
 	if err := root.Execute(); err != nil {
 		if os.Getenv("BEE_DEBUG_TRACEBACK") != "" {
-			fmt.Fprintf(os.Stderr, "error: %+v\n", err)
+			fmt.Fprintf(os.Stderr, "%+v\n", err)
 		} else {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			cli.Error(err.Error()) // "ERROR: <msg>" to stderr, matching the TS CLI
 		}
 		os.Exit(1)
 	}

@@ -189,6 +189,11 @@ func (c *Client) GetJSON(ctx context.Context, path string, v any) error {
 		return err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		// Match the TS client: a 404 becomes a terse "Resource not found: <path>"
+		// rather than dumping the server's HTML error page.
+		return fmt.Errorf("Resource not found: %s", path)
+	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("GET %s: HTTP %d: %s", path, resp.StatusCode, strings.TrimSpace(string(body)))

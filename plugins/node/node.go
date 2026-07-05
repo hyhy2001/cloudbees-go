@@ -549,7 +549,7 @@ func nodeCreateCmd(database *sql.DB, dbPath string) *cobra.Command {
 		createSuccess:
 
 			if flagAvail != "demand" && flagAvail != "always" {
-				cli.Warn(fmt.Sprintf("Unknown --availability '%s'; defaulted to 'always'. Valid: always | demand", flagAvail))
+				cli.Warn(fmt.Sprintf("Unknown --availability '%s'; defaulted to 'always'. Valid values: always | demand", flagAvail))
 			}
 
 			_ = cache.InvalidateResource(database, "node")
@@ -558,7 +558,11 @@ func nodeCreateCmd(database *sql.DB, dbPath string) *cobra.Command {
 			cli.Success(fmt.Sprintf("Node '%s' created.", name))
 			fmt.Printf("  Link: %s/computer/%s/\n", strings.TrimRight(client.BaseURL, "/"), name)
 			if flagHost != "" {
-				fmt.Printf("  SSH Node will auto-connect to %s:%d using cred: '%s'\n", flagHost, flagPort, flagCredID)
+				credLabel := flagCredID
+				if credLabel == "" {
+					credLabel = "None"
+				}
+				fmt.Printf("  SSH Node will auto-connect to %s:%d using cred: '%s'\n", flagHost, flagPort, credLabel)
 				if flagCredID == "" {
 					cli.Warn("No SSH credential set — ensure key-based auth is configured on the agent.")
 				}
@@ -792,7 +796,7 @@ func nodeUpdateCmd(database *sql.DB, dbPath string) *cobra.Command {
 					if flagLauncher == "ssh" || flagLauncher == "jnlp" {
 						lt = flagLauncher
 					} else {
-						cli.Warn(fmt.Sprintf("Unknown --launcher '%s'; ignored. Valid: ssh | jnlp", flagLauncher))
+						cli.Warn(fmt.Sprintf("Unknown --launcher '%s'; ignored. Valid values: ssh | jnlp", flagLauncher))
 					}
 				}
 				h := current.host
@@ -825,7 +829,7 @@ func nodeUpdateCmd(database *sql.DB, dbPath string) *cobra.Command {
 					if flagAvail == "always" || flagAvail == "demand" {
 						avail = flagAvail
 					} else {
-						cli.Warn(fmt.Sprintf("Unknown --availability '%s'; ignored. Valid: always | demand", flagAvail))
+						cli.Warn(fmt.Sprintf("Unknown --availability '%s'; ignored. Valid values: always | demand", flagAvail))
 					}
 				}
 				ind := current.inDemandDelay
@@ -889,7 +893,7 @@ func nodeTrackCmd(database *sql.DB, dbPath string) *cobra.Command {
 			}
 			for _, name := range args {
 				if _, err := getNodeOffline(client, name); err != nil {
-					if strings.Contains(err.Error(), "404") {
+					if strings.Contains(err.Error(), "Resource not found") {
 						cli.Error(fmt.Sprintf("Node '%s' not found on server. Skipping.", name))
 					} else {
 						cli.Error(fmt.Sprintf("Could not verify node '%s': %s", name, err))

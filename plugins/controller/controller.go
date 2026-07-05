@@ -186,7 +186,7 @@ func selectCmd(database *sql.DB, dbPath string) *cobra.Command {
 				}
 			}
 			if match == nil {
-				return fmt.Errorf("controller '%s' not found", name)
+				return fmt.Errorf("Controller '%s' not found.", name)
 			}
 			// Resolve redirect to real URL
 			resolvedURL := resolveURL(cmd.Context(), client, match.URL)

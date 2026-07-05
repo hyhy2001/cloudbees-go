@@ -86,7 +86,8 @@ func loginCmd(db *sql.DB, dbPath string) *cobra.Command {
 				_ = session.SetInsecureTLS(db, profile, true)
 			}
 
-			cli.Success(fmt.Sprintf("Logged in as '%s' on %s (profile: %s)", username, serverURL, profile))
+			cli.Success(fmt.Sprintf("Logged in as '%s' on %s", username, serverURL))
+			fmt.Printf("     Profile: %s\n", profile)
 			if insecure {
 				cli.Warn("TLS verification disabled — only use on trusted networks.")
 			}
@@ -148,7 +149,7 @@ func logoutCmd(db *sql.DB) *cobra.Command {
 			if err := session.DeleteProfile(db, profile); err != nil {
 				return err
 			}
-			cli.Success(fmt.Sprintf("Logged out profile '%s'", profile))
+			cli.Success(fmt.Sprintf("Logged out of '%s'.", profile))
 			return nil
 		},
 	}
@@ -167,7 +168,7 @@ func profilesCmd(db *sql.DB) *cobra.Command {
 			}
 			active, _ := session.GetActiveProfileName(db)
 			if len(profiles) == 0 {
-				cli.Info("No profiles saved. Run: bee auth login")
+				cli.Info("No profiles found. Run: bee auth login")
 				return nil
 			}
 			rows := make([][]string, len(profiles))
@@ -202,7 +203,7 @@ func useCmd(db *sql.DB) *cobra.Command {
 			if err := session.SetActiveProfile(db, name); err != nil {
 				return err
 			}
-			cli.Success(fmt.Sprintf("Switched to profile '%s'", name))
+			cli.Success(fmt.Sprintf("Active profile: %s", name))
 			return nil
 		},
 	}
@@ -220,7 +221,7 @@ func deleteCmd(db *sql.DB) *cobra.Command {
 			if err := session.DeleteProfile(db, profile); err != nil {
 				return err
 			}
-			cli.Success(fmt.Sprintf("Deleted profile '%s'", profile))
+			cli.Success(fmt.Sprintf("Profile '%s' deleted.", profile))
 			return nil
 		},
 	}

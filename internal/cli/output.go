@@ -87,28 +87,52 @@ func KV(pairs [][]string) {
 	w.Flush()
 }
 
-// Success prints a green success message.
-func Success(msg string) { fmt.Println("\033[32m✓\033[0m " + msg) }
-
-// Error prints a red error message to stderr.
-func Error(msg string) { fmt.Fprintln(os.Stderr, "\033[31m✗\033[0m "+msg) }
-
-// stdoutIsTTY reports whether stdout is an interactive terminal — color is
-// emitted only then, matching chalk's auto-detection in the TS CLI (piped
-// output is plain, so captured/redirected output compares byte-for-byte).
+// stdoutIsTTY / stderrIsTTY report whether the stream is an interactive
+// terminal. Color is emitted only then, matching chalk's auto-detection in the
+// TS CLI — piped output is plain, so captured output compares byte-for-byte.
 func stdoutIsTTY() bool { return term.IsTerminal(int(os.Stdout.Fd())) }
+func stderrIsTTY() bool { return term.IsTerminal(int(os.Stderr.Fd())) }
 
-// Info prints a dim info message (plain when piped, matching TS chalk).
-func Info(msg string) {
+// The message helpers mirror the TS CLI (src/core/cli/output.ts): the "OK ",
+// "INFO ", "WARN " tokens and the "ERROR: " prefix are part of the printed
+// line, wrapped in chalk styles on a TTY (green / dim-cyan / yellow / bold-red)
+// and emitted plain when piped.
+
+// Success prints "OK <msg>" (green on a TTY), matching TS printSuccess.
+func Success(msg string) {
+	line := "OK " + msg
 	if stdoutIsTTY() {
-		fmt.Println("\033[2m" + msg + "\033[0m")
-	} else {
-		fmt.Println(msg)
+		line = "\033[32m" + line + "\033[39m"
 	}
+	fmt.Println(line)
 }
 
-// Warn prints a yellow warning message.
-func Warn(msg string) { fmt.Println("\033[33m!\033[0m " + msg) }
+// Error prints "ERROR: <msg>" to stderr (bold-red on a TTY), matching TS printError.
+func Error(msg string) {
+	line := "ERROR: " + msg
+	if stderrIsTTY() {
+		line = "\033[1m\033[31m" + line + "\033[39m\033[22m"
+	}
+	fmt.Fprintln(os.Stderr, line)
+}
+
+// Info prints "INFO <msg>" (dim-cyan on a TTY), matching TS printInfo.
+func Info(msg string) {
+	line := "INFO " + msg
+	if stdoutIsTTY() {
+		line = "\033[2m\033[36m" + line + "\033[39m\033[22m"
+	}
+	fmt.Println(line)
+}
+
+// Warn prints "WARN <msg>" to stdout (yellow on a TTY), matching TS printWarning.
+func Warn(msg string) {
+	line := "WARN " + msg
+	if stdoutIsTTY() {
+		line = "\033[33m" + line + "\033[39m"
+	}
+	fmt.Println(line)
+}
 
 // ReadHidden reads a password/token from stdin without echoing.
 func ReadHidden(prompt string) (string, error) {

@@ -222,7 +222,7 @@ func GetJob(ctx context.Context, client *api.Client, name string) (*JobDTO, erro
 		"/job/"+JobPathSegments(name)+"/api/json?tree=_class,name,url,color,description,buildable,lastBuild[number,result,url]",
 		&raw)
 	if err != nil {
-		if strings.Contains(err.Error(), "404") {
+		if strings.Contains(err.Error(), "Resource not found") {
 			return nil, nil
 		}
 		return nil, err

@@ -36,7 +36,7 @@ func ListCredentials(ctx context.Context, client *api.Client, store, username st
 		} `json:"credentials"`
 	}
 	if err := client.GetJSON(ctx, seg+"/api/json?tree=credentials[id,typeName,description,scope,displayName]", &raw); err != nil {
-		if strings.Contains(err.Error(), "404") {
+		if strings.Contains(err.Error(), "Resource not found") {
 			return nil, nil
 		}
 		return nil, err
