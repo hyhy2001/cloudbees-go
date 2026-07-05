@@ -291,7 +291,7 @@ func credListCmd(database *sql.DB, dbPath string) *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&flagAll, "all", false, "Show all credentials (default: only yours)")
 	cmd.Flags().StringVar(&flagStore, "store", "system", "Credential store: system or user")
-	cmd.Flags().StringVar(&flagOutput, "output", "", "Output format: table (default) or json")
+	cmd.Flags().StringVarP(&flagOutput, "output", "o", "", "Output format: table (default) or json")
 	return cmd
 }
 

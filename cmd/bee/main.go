@@ -96,6 +96,11 @@ func main() {
 			return cmd.Help()
 		},
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			if debug, _ := cmd.Flags().GetBool("debug"); debug {
+				// Mirror the TS CLI: --debug flips the env flag the ask/output
+				// layers already check (see plugins/ask, BEE_DEBUG_TRACEBACK).
+				_ = os.Setenv("BEE_DEBUG_TRACEBACK", "1")
+			}
 			if flagUI && cmd.Name() != "bee" {
 				if err := tui.Run(database, dbPath, version); err != nil {
 					fmt.Fprintf(os.Stderr, "tui error: %v\n", err)
@@ -106,8 +111,13 @@ func main() {
 		},
 	}
 
+	// Register the version flag with a -V shorthand before cobra's auto-init
+	// claims one (it would otherwise use -v), matching the TS CLI.
+	root.Flags().BoolP("version", "V", false, "output the version number")
+
 	root.PersistentFlags().BoolVarP(&flagUI, "ui", "u", false, "Launch interactive TUI")
 	root.PersistentFlags().Bool("install", false, "Install bee: create wrapper + symlink to ~/.local/bin/bee")
+	root.PersistentFlags().Bool("debug", false, "enable debug logging and verbose error output")
 
 	// Register plugins
 	auth.Register(root, database, dbPath)
@@ -118,7 +128,11 @@ func main() {
 	ask.Register(root, database, dbPath)
 
 	if err := root.Execute(); err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		if os.Getenv("BEE_DEBUG_TRACEBACK") != "" {
+			fmt.Fprintf(os.Stderr, "error: %+v\n", err)
+		} else {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		}
 		os.Exit(1)
 	}
 }

@@ -186,9 +186,10 @@ func profilesCmd(db *sql.DB) *cobra.Command {
 
 func useCmd(db *sql.DB) *cobra.Command {
 	return &cobra.Command{
-		Use:   "use <profile>",
-		Short: "Switch / change the active profile",
-		Args:  cobra.ExactArgs(1),
+		Use:     "use <profile>",
+		Aliases: []string{"switch"},
+		Short:   "Switch / change the active profile",
+		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
 			if _, err := session.GetProfile(db, name); err != nil {
