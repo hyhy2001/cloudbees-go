@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"syscall"
 
 	"github.com/spf13/cobra"
 
@@ -16,8 +17,24 @@ import (
 	"bee/plugins/cred"
 	"bee/plugins/job"
 	"bee/plugins/node"
-	"bee/tui"
 )
+
+// launchTUI replaces the current process with the bee-tui binary (kept next to
+// bee). The TUI lives in its own binary so this CLI never links bubbletea,
+// whose init() queries the terminal and would pollute CLI output. dbPath is
+// passed via CB_DB_PATH so bee-tui opens exactly the DB bee already resolved.
+func launchTUI(dbPath string) error {
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	tuiPath := filepath.Join(filepath.Dir(exe), "bee-tui")
+	if _, err := os.Stat(tuiPath); err != nil {
+		return fmt.Errorf("bee-tui binary not found next to bee (%s); rebuild with make", tuiPath)
+	}
+	env := append(os.Environ(), "CB_DB_PATH="+dbPath)
+	return syscall.Exec(tuiPath, []string{tuiPath}, env)
+}
 
 var version = "1.0.0"
 
@@ -89,10 +106,7 @@ func main() {
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if flagUI {
-				if err := tui.Run(database, dbPath, version); err != nil {
-					return fmt.Errorf("tui error: %w", err)
-				}
-				return nil
+				return launchTUI(dbPath) // execs bee-tui; only returns on failure
 			}
 			return cmd.Help()
 		},
@@ -103,10 +117,10 @@ func main() {
 				_ = os.Setenv("BEE_DEBUG_TRACEBACK", "1")
 			}
 			if flagUI && cmd.Name() != "bee" {
-				if err := tui.Run(database, dbPath, version); err != nil {
+				if err := launchTUI(dbPath); err != nil {
 					fmt.Fprintf(os.Stderr, "tui error: %v\n", err)
+					os.Exit(1)
 				}
-				os.Exit(0)
 			}
 			return nil
 		},
